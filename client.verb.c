@@ -1,11 +1,11 @@
 #include "pp_common.h"
 #include "pp_verb.h"
 
-#define SERVER_IP "10.237.1.205"
-//#define SERVER_IP "192.168.60.205"
+//#define SERVER_IP "10.237.1.205"
+#define SERVER_IP "192.168.187.168"
 
 static char ibv_devname[100] = "ibp59s0f0";
-static int client_sgid_idx = 3;
+static int client_sgid_idx = 1;
 
 #define PP_VERB_OPCODE_CLIENT IBV_WR_SEND_WITH_IMM
 //#define PP_VERB_OPCODE_CLIENT IBV_WR_RDMA_WRITE_WITH_IMM
@@ -75,6 +75,10 @@ int main(int argc, char *argv[])
 	ret = pp_ctx_init(&ppv_ctx.ppc, ibv_devname, 0, NULL);
 	if (ret)
 		return ret;
+
+	//ret = pp_ctx_init(&ppv_ctx.ppc2, "mlx5_3", 0, NULL);
+	//if (ret)
+	//	return ret;
 
 	ret = pp_create_cq_qp_verb(&ppv_ctx.ppc, &ppv_ctx.cqqp);
 	if (ret)

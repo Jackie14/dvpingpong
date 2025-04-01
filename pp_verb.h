@@ -7,6 +7,7 @@ struct pp_verb_cq_qp {
 
 struct pp_verb_ctx {
 	struct pp_context ppc;
+	struct pp_context ppc2;
 	struct pp_verb_cq_qp cqqp;
 };
 

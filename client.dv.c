@@ -2,10 +2,10 @@
 #include "pp_dv.h"
 
 
-#define SERVER_IP "10.237.1.205"
+#define SERVER_IP "192.168.187.168"
 
 static char ibv_devname[100] = "ibp59s0f0";
-static int client_sgid_idx = 3;
+static int client_sgid_idx = 1;
 
 //#define PP_DV_OPCODE_CLIENT IBV_WR_RDMA_WRITE_WITH_IMM /* IBV_WR_SEND_WITH_IMM */
 
@@ -40,6 +40,7 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 	num_comp = 0;
 	while (num_comp < num_post) {
 		ret = pp_dv_poll_cq(&ppdv->cq, 1);
+		usleep(1000 * 10);
 		if (ret == CQ_POLL_ERR) {
 			ERR("poll_cq(send) failed %d, %d/%d\n", ret, num_comp, num_post);
 			return ret;

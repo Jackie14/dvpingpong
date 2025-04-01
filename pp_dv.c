@@ -382,7 +382,7 @@ static int dvqp_rst2init(const struct pp_context *ppc, struct pp_dv_qp *dvqp)
 }
 
 /* FIXME: For RoCE currently dmac is hard-coded */
-static uint8_t dmac[6] = {0x7c, 0xfe, 0x90, 0xcb, 0x74, 0x6e};
+static uint8_t dmac[6] = {0x02, 0x72, 0x18, 0xd5, 0x8d, 0x9b};
 //static uint8_t dmac[6] = {0xec, 0x0d, 0x9a, 0x8a, 0x28, 0x2a};
 static int dvqp_init2rtr(const struct pp_context *ppc,
 			 const struct pp_exchange_info *peer,
@@ -581,6 +581,7 @@ static void *get_sw_cqe(struct pp_dv_cq *dvcq, int n)
 	cqe64 = (dvcq->cqe_sz == 64) ? cqe : cqe + 64;
 
 	DVDBG2("cqbuf %p n %d cqe_sz %d ncqe %d cqe64 %p owner 0x%x, opcde 0x%x final %d\n",
+	//DVDBG("cqbuf %p n %d cqe_sz %d ncqe %d cqe64 %p owner 0x%x, opcde 0x%x final %d\n",
 	       dvcq->buf, n, dvcq->cqe_sz, dvcq->ncqe, cqe64,
 	       mlx5dv_get_cqe_owner(cqe64), mlx5dv_get_cqe_opcode(cqe64),
 	       !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe)));
@@ -594,7 +595,7 @@ static void *get_sw_cqe(struct pp_dv_cq *dvcq, int n)
 
 static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 {
-#if 0
+//#if 0
 	uint16_t wqe_ctr;
 	uint8_t opcode;
 	int idx;
@@ -604,17 +605,48 @@ static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 
 	if (opcode == MLX5_CQE_REQ_ERR) {
 		idx = wqe_ctr & (dvcq->dvqp->sq.wqe_cnt - 1);
-		dvcq->qp->sq.tail = dvcq->qp->sq.wqe_head[idx] + 1;
+		struct mlx5_err_cqe *cqe_err = (struct mlx5_err_cqe *)cqe64;
+		uint32_t wqe_opcode_qpn = be32toh(cqe_err->s_wqe_opcode_qpn);
+		uint8_t vendor_err_synd = cqe_err->vendor_err_synd;
+		uint8_t syndrome  = cqe_err->syndrome;
+		DVDBG("Error MLX5_CQE_REQ_ERR, wqe_idx: %d, wqe_opcode_qpn: %x, syndrome: %x, vendor_err_synd: %x\n", idx, wqe_opcode_qpn, syndrome, vendor_err_synd);
+		// Error MLX5_CQE_REQ_ERR, wqe_idx: 0, wqe_opcode_qpn: b0002ab, syndrome: 15, vendor_err_synd: 81
+		// b = 0xB: Send_with_Immediate
+		// 2a8 = qpn
+		/* 15 = syndrome:
+		   IB compliant completion with error syndrome
+		   0x1: Local_Length_Error
+		   0x2: Local_QP_Operation_Error
+		   0x4: Local_Protection_Error
+		   0x5: Work_Request_Flushed_Error
+		   0x6: Memory_Window_Bind_Error
+		   0x10: Bad_Response_Error
+		   0x11: Local_Access_Error
+		   0x12: Remote_Invalid_Request_Error
+		   0x13: Remote_Access_Error
+		   0x14: Remote_Operation_Error
+		   0x15: Transport_Retry_Counter_Exceeded.      ??? Why this error
+		   0x16: RNR_Retry_Counter_Exceeded
+		   0x22: Aborted_Error
+		   other is Reserved
+		   Syndrome is defined according to the InfiniBand Architecture
+		   Specification, Volume 1. For a detailed explanation of the syndromes,
+		   refer to the Software Transport Interface and Software
+		   Transport Verbs chapters of the IB specification.
+		*/
+		//dvcq->qp->sq.tail = dvcq->qp->sq.wqe_head[idx] + 1;
 	} else if (opcode == MLX5_CQE_RESP_ERR) {
-		++dvcq->qp->sq.tail;
+		DVDBG("Error MLX5_CQE_RESP_ERR\n");
+		//++dvcq->qp->sq.tail;
 	} else {
-		idx = wqe_ctr & (dvcq->dvqp->sq.wqe_cnt - 1);
+		//idx = wqe_ctr & (dvcq->dvqp->sq.wqe_cnt - 1);
 		//dvcq->qp->sq.tail = dvcq->qp->sq.wqe_head[idx] + 1;
 		return CQ_OK;
 	}
 
+	DVDBG("Error %u\n", opcode);
 	return CQ_POLL_ERR;
-#endif
+//#endif
 	return CQ_OK;
 }
 

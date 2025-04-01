@@ -2,7 +2,7 @@
 #include "pp_verb.h"
 
 static char ibv_devname[100] = "mlx5_3";
-static int server_sgid_idx = 3;
+static int server_sgid_idx = 1;
 
 static struct pp_verb_ctx ppv_ctx;
 static struct pp_exchange_info client = {};

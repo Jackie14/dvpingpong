@@ -41,7 +41,7 @@ out:
 	return err;
 }
 
-static int mlx5_set_port_admin_status(struct ibv_context *ctx, enum mlx5_port_status status)
+static int DEVX_SET_port_admin_status(struct ibv_context *ctx, enum mlx5_port_status status)
 {
 	uint32_t in[DEVX_ST_SZ_DW(paos_reg)] = {0};
 	uint32_t out[DEVX_ST_SZ_DW(paos_reg)];
@@ -87,7 +87,7 @@ static int mlx5_set_port_admin_status(struct ibv_context *ctx, enum mlx5_port_st
 
 int pp_config_port(struct ibv_context *ctx, enum mlx5_port_status status)
 {
-	mlx5_set_port_admin_status(ctx, status);  // MLX5_PORT_DOWN, MLX5_PORT_UP
+	DEVX_SET_port_admin_status(ctx, status);  // MLX5_PORT_DOWN, MLX5_PORT_UP
 	return 0;
 }
 

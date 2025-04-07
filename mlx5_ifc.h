@@ -33,7 +33,7 @@
 #ifndef MLX5_IFC_H
 #define MLX5_IFC_H
 
-///#define u8 uint8_t
+#define u8 uint8_t
 typedef unsigned char u8;
 typedef unsigned short int u16;
 typedef unsigned int u32;
@@ -81,6 +81,7 @@ enum {
 	MLX5_CMD_OP_MODIFY_GENERAL_OBJECT = 0xa01,
 	MLX5_CMD_OP_QUERY_GENERAL_OBJECT = 0xa02,
 	MLX5_CMD_OP_SYNC_STEERING = 0xb00,
+	MLX5_CMD_OPCODE_ALLOW_OTHER_VHCA_ACCESS = 0xb16,
 };
 
 enum {
@@ -1329,8 +1330,11 @@ struct mlx5_ifc_mkc_bits {
 
 	u8         translations_octword_size[0x20];
 
-	u8         reserved_at_1c0[0x1b];
-	u8         log_page_size[0x5];
+	//u8         reserved_at_1c0[0x1b];
+	//u8         log_page_size[0x5];
+	u8 reserved_at_1c0[0x19];
+	u8 relaxed_ordering_read[0x1];
+	u8 log_entity_size[0x6];
 
 	u8         reserved_at_1e0[0x20];
 };
@@ -1366,7 +1370,14 @@ struct mlx5_ifc_create_mkey_in_bits {
 
 	u8         translations_octword_actual_size[0x20];
 
-	u8         reserved_at_320[0x560];
+	u8 mkey_umem_id[0x20];
+
+	u8 mkey_umem_offset[0x40];
+
+	u8 reserved_at_380[0x10];
+	u8 bsf_octword_actual_size[0x10];
+
+	u8 reserved_at_3a0[0x4e0];
 
 	u8         klm_pas_mtt[0][0x20];
 };
@@ -2517,6 +2528,24 @@ enum {
 	MLX5_OBJ_TYPE_RESERVED_QPN = 0x002C,
 };
 
+struct mlx5_ifc_general_obj_create_param_bits {
+	uint8_t alias_object[0x1];
+	uint8_t reserved_at_1[0x2];
+	uint8_t log_obj_range[0x5];
+	uint8_t reserved_at_8[0x18];
+};
+
+struct mlx5_ifc_general_obj_query_param_bits {
+	uint8_t alias_object[0x1];
+	uint8_t obj_offset[0x1f];
+};
+
+union mlx5_ifc_general_obj_in_cmd_hdr_op_param_auto_bits {
+	struct mlx5_ifc_general_obj_create_param_bits gen_obj_create_param;
+	struct mlx5_ifc_general_obj_query_param_bits gen_obj_query_param;
+	uint8_t reserved_at_0[0x20];
+};
+
 struct mlx5_ifc_general_obj_in_cmd_hdr_bits {
 	u8         opcode[0x10];
 	u8         uid[0x10];
@@ -2526,9 +2555,10 @@ struct mlx5_ifc_general_obj_in_cmd_hdr_bits {
 
 	u8         obj_id[0x20];
 
-	u8         reserved_at_60[0x3];
-	u8         log_obj_range[0x5];
-	u8         reserved_at_68[0x18];
+	union mlx5_ifc_general_obj_in_cmd_hdr_op_param_auto_bits op_param;
+	//u8         reserved_at_60[0x3];
+	//u8         log_obj_range[0x5];
+	//u8         reserved_at_68[0x18];
 };
 
 struct mlx5_ifc_general_obj_out_cmd_hdr_bits {
@@ -3907,6 +3937,57 @@ struct mlx5_ifc_create_cq_in_bits {
 	u8         reserved_at_2e1[0x59f];
 
 	u8          pas[][0x40];
+};
+
+struct mlx5_ifc_alias_context_bits {
+	uint8_t vhca_id_to_be_accessed[0x10];
+	uint8_t reserved_at_10[0xd];
+	uint8_t status[0x3];
+
+	uint8_t object_id_to_be_accessed[0x20];
+
+	uint8_t reserved_at_40[0x40];
+
+	uint8_t access_key[8][0x20];
+
+	uint8_t metadata[4][0x20];
+};
+
+struct mlx5_ifc_create_alias_obj_in_bits {
+	struct mlx5_ifc_general_obj_in_cmd_hdr_bits hdr;
+	struct mlx5_ifc_alias_context_bits alias_ctx;
+};
+
+struct mlx5_ifc_create_alias_obj_out_bits {
+	struct mlx5_ifc_general_obj_out_cmd_hdr_bits hdr;
+};
+
+struct mlx5_ifc_allow_other_vhca_access_in_bits {
+	uint8_t opcode[0x10];
+	uint8_t uid[0x10];
+
+	uint8_t reserved_at_20[0x10];
+	uint8_t op_mod[0x10];
+
+	uint8_t reserved_at_40[0x40];
+
+	uint8_t reserved_at_80[0x10];
+	uint8_t object_type_to_be_accessed[0x10];
+
+	uint8_t object_id_to_be_accessed[0x20];
+
+	uint8_t reserved_at_c0[0x40];
+
+	uint8_t access_key[8][0x20];
+};
+
+struct mlx5_ifc_allow_other_vhca_access_out_bits {
+	uint8_t status[0x8];
+	uint8_t reserved_at_8[0x18];
+
+	uint8_t syndrome[0x20];
+
+	uint8_t reserved_at_40[0x40];
 };
 
 #endif /* MLX5_IFC_H */

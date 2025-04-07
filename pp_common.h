@@ -43,6 +43,10 @@ struct pp_context {
 
 	struct ibv_mr *mr[PP_MAX_WR];
 	unsigned char *mrbuf[PP_MAX_WR];
+	struct mlx5dv_devx_obj *alias_mkey_obj[PP_MAX_WR];
+	uint32_t alias_mkey[PP_MAX_WR];
+	unsigned char *alias_mkey_mrbuf[PP_MAX_WR];
+
 	ssize_t mrbuflen;
 };
 
@@ -59,7 +63,7 @@ struct pp_exchange_info {
 };
 
 int pp_ctx_init(struct pp_context *pp, const char *ibv_devname,
-		int use_vfio, const char *vfio_pci_name);
+		int use_vfio, const char *vfio_pci_name, bool use_devx);
 void pp_ctx_cleanup(struct pp_context *pp);
 
 int pp_exchange_info(struct pp_context *ppc, int my_sgid_idx,

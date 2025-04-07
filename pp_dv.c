@@ -13,6 +13,135 @@
 
 #define PP_ACCESS_FALGS (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ)
 
+enum {
+	MLX5_GEN_OBJ_TYPE_MKEY = 0xff01,
+};
+
+
+bool allow_other_vhca_access(struct ibv_context *ibctx,
+			     const uint8_t *access_key,
+		      	     size_t access_key_size,
+			     uint32_t lkey)
+{
+	uint32_t in[DEVX_ST_SZ_DW(allow_other_vhca_access_in)] = {};
+	uint32_t out[DEVX_ST_SZ_DW(allow_other_vhca_access_out)] = {};
+
+	/* Allow crossing mkey */
+	//DEVX_SET(allow_other_vhca_access_in, in, uid, 0);
+	DEVX_SET(allow_other_vhca_access_in, in, opcode, MLX5_CMD_OPCODE_ALLOW_OTHER_VHCA_ACCESS);
+	DEVX_SET(allow_other_vhca_access_in, in, object_type_to_be_accessed, MLX5_GEN_OBJ_TYPE_MKEY);
+	DEVX_SET(allow_other_vhca_access_in, in, object_id_to_be_accessed, lkey >> 8);
+	void *access_key_dest = DEVX_ADDR_OF(allow_other_vhca_access_in, in, access_key);
+	memcpy(access_key_dest, access_key, access_key_size);
+
+	int err = mlx5dv_devx_general_cmd(ibctx, in, sizeof(in), out, sizeof(out));
+	if (err) {
+		int status, syndrome;
+		status = DEVX_GET(allow_other_vhca_access_out, out, status);
+		syndrome = DEVX_GET(allow_other_vhca_access_out, out, syndrome);
+		ERR("allow_other_vhca_access failed, status:%x, syndrome:%x\n", status, syndrome);
+		return false;
+	}
+	//struct mlx5dv_devx_obj *obj = mlx5dv_devx_obj_create(ibctx, in, sizeof(in), out, sizeof(out));
+	//if (!obj) {
+	//	int status, syndrome;
+	//	status = DEVX_GET(allow_other_vhca_access_out, out, status);
+	//	syndrome = DEVX_GET(allow_other_vhca_access_out, out, syndrome);
+	//	ERR("allow_other_vhca_access failed, status:%x, syndrome:%x\n", status, syndrome);
+	//	return false;
+	//}
+	return true;
+}
+struct mlx5dv_devx_obj *create_alias_mkey_obj(struct ibv_context *ibctx,
+		      uint16_t vhca_id,
+		      uint32_t lkey,
+		      const uint8_t *access_key,
+		      size_t access_key_size,
+		      uint32_t pdn,
+		      uint32_t *alias_mkey)
+{
+	uint32_t in[DEVX_ST_SZ_DW(create_alias_obj_in)] = {0};
+	uint32_t out[DEVX_ST_SZ_DW(create_alias_obj_out)] = {0};
+
+	void *hdr = DEVX_ADDR_OF(create_alias_obj_in, in, hdr);
+	void *alias_ctx = DEVX_ADDR_OF(create_alias_obj_in, in, alias_ctx);
+	void *op_param = DEVX_ADDR_OF(general_obj_in_cmd_hdr, in, op_param);
+
+	DEVX_SET(general_obj_in_cmd_hdr, hdr, opcode, MLX5_CMD_OP_CREATE_GENERAL_OBJECT);
+	DEVX_SET(general_obj_in_cmd_hdr, hdr, obj_type, MLX5_GEN_OBJ_TYPE_MKEY);
+	DEVX_SET(general_obj_create_param, op_param, alias_object, 1);
+
+	DEVX_SET(alias_context, alias_ctx, vhca_id_to_be_accessed, vhca_id);
+	DEVX_SET(alias_context, alias_ctx, object_id_to_be_accessed, lkey >> 8);
+
+
+	// How this access key edited?
+	void *access_key_addr = DEVX_ADDR_OF(alias_context, alias_ctx, access_key);
+	memcpy(access_key_addr, access_key, access_key_size);
+
+	// what is this pdn
+	void *metadata = DEVX_ADDR_OF(alias_context, alias_ctx, metadata);
+	uint32_t swaped_pdn = htobe32(pdn);
+	memcpy(metadata, &swaped_pdn, sizeof(swaped_pdn));
+
+	struct mlx5dv_devx_obj *obj = mlx5dv_devx_obj_create(ibctx, in, sizeof(in), out, sizeof(out));
+	if (!obj) {
+		int status, syndrome;
+		status = DEVX_GET(allow_other_vhca_access_out, out, status);
+		syndrome = DEVX_GET(allow_other_vhca_access_out, out, syndrome);
+		ERR("devx_obj_create(alias mkey) failed. status:%x, syndrome:%x\n", status, syndrome);
+		return NULL;
+	}
+
+	*alias_mkey = (DEVX_GET(create_alias_obj_out, out, hdr.obj_id) << 8);
+	return obj;
+}
+
+//int dr_devx_query_gvmi(struct ibv_context *ctx, bool other_vport,
+//		       uint16_t vport_number, uint16_t *gvmi)
+int dr_devx_query_gvmi(struct ibv_context *ctx, uint16_t *gvmi)
+{
+	uint32_t out[DEVX_ST_SZ_DW(query_hca_cap_out)] = {};
+	uint32_t in[DEVX_ST_SZ_DW(query_hca_cap_in)] = {};
+	int err;
+
+	DEVX_SET(query_hca_cap_in, in, opcode, MLX5_CMD_OP_QUERY_HCA_CAP);
+	//DEVX_SET(query_hca_cap_in, in, other_function, other_vport);
+	//DEVX_SET(query_hca_cap_in, in, function_id, vport_number);
+	DEVX_SET(query_hca_cap_in, in, op_mod,
+		 MLX5_SET_HCA_CAP_OP_MOD_GENERAL_DEVICE |
+		 HCA_CAP_OPMOD_GET_CUR);
+
+	err = mlx5dv_devx_general_cmd(ctx, in, sizeof(in), out, sizeof(out));
+	if (err) {
+		//err = mlx5_get_cmd_status_err(err, out);
+		//ERR("Query general failed %d\n", err);
+		ERR("Query general failed\n");
+		return err;
+	}
+
+	*gvmi = DEVX_GET(query_hca_cap_out, out, capability.cmd_hca_cap.vhca_id);
+
+	return 0;
+}
+
+uint32_t get_pdn(struct ibv_pd *pd)
+{
+	struct mlx5dv_pd dv_pd = {};
+	struct mlx5dv_obj obj = {};
+	int ret;
+
+	obj.pd.in = pd;
+	obj.pd.out = &dv_pd;
+	ret = mlx5dv_init_obj(&obj, MLX5DV_OBJ_PD);
+	if (ret) {
+		ERR("mlx5dv_init_obj(PD) failed\n");
+		return 0xffffffff;
+	}
+	return dv_pd.pdn;
+}
+
+
 int pp_create_cq_dv(const struct pp_context *ppc, struct pp_dv_cq *dvcq)
 {
 	uint32_t in[DEVX_ST_SZ_DW(create_cq_in)] = {};
@@ -88,12 +217,15 @@ int pp_create_cq_dv(const struct pp_context *ppc, struct pp_dv_cq *dvcq)
 
 	dvcq->obj = mlx5dv_devx_obj_create(ppc->ibctx, in, sizeof(in), out, sizeof(out));
 	if (!dvcq->obj) {
-		ERR("devx_obj_create(cq) failed: eqn %d\n", eqn);
+		int status, syndrome;
+		status = DEVX_GET(create_cq_out, out, status);
+		syndrome = DEVX_GET(create_cq_out, out, syndrome);
+		ERR("devx_obj_create(cq) failed: eqn %d, status %x, syndrome %x, dbr_umem_id %x, buf_umem_id %x\n", eqn, status, syndrome, dvcq->db_umem->umem_id, dvcq->buff_umem->umem_id);
 		goto fail_obj_create;
 	}
 	dvcq->cqn = DEVX_GET(create_cq_out, out, cqn);
-	INFO("dv: CQ %d created, eqn %d, db@%p, buf@%p\n",
-	     dvcq->cqn, eqn, dvcq->db, dvcq->buf);
+	INFO("dv: CQ %d created, eqn %d, db@%p %x, buf@%p, %x\n",
+	     dvcq->cqn, eqn, dvcq->db, dvcq->db_umem->umem_id, dvcq->buf, dvcq->buff_umem->umem_id);
 
 	dvcq->cons_index = 0;
 	for (i = 0; i < dvcq->ncqe; i++) {
@@ -382,7 +514,8 @@ static int dvqp_rst2init(const struct pp_context *ppc, struct pp_dv_qp *dvqp)
 }
 
 /* FIXME: For RoCE currently dmac is hard-coded */
-static uint8_t dmac[6] = {0x02, 0x72, 0x18, 0xd5, 0x8d, 0x9b};
+//static uint8_t dmac[6] = {0x02, 0x72, 0x18, 0xd5, 0x8d, 0x9b};
+static uint8_t dmac[6] = {0xa0, 0x88, 0xc2, 0x53, 0x01, 0x80};
 //static uint8_t dmac[6] = {0xec, 0x0d, 0x9a, 0x8a, 0x28, 0x2a};
 static int dvqp_init2rtr(const struct pp_context *ppc,
 			 const struct pp_exchange_info *peer,

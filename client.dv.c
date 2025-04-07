@@ -2,10 +2,10 @@
 #include "pp_dv.h"
 
 
-#define SERVER_IP "192.168.187.168"
+#define SERVER_IP "192.168.167.168"
 
 static char ibv_devname[100] = "ibp59s0f0";
-static int client_sgid_idx = 1;
+static int client_sgid_idx = 3;
 
 //#define PP_DV_OPCODE_CLIENT IBV_WR_RDMA_WRITE_WITH_IMM /* IBV_WR_SEND_WITH_IMM */
 
@@ -86,9 +86,66 @@ int main(int argc, char *argv[])
 		strcpy(ibv_devname, argv[1]);
 	}
 
-	ret = pp_ctx_init(&ppdv.ppc, ibv_devname, 0, NULL);
+	ret = pp_ctx_init(&ppdv.ppc, ibv_devname, 0, NULL, true);
 	if (ret)
 		return ret;
+
+	ret = pp_ctx_init(&ppdv.ppc2, "mlx5_1", 0, NULL, true);
+	if (ret)
+		return ret;
+
+	uint16_t vhca_id_2;
+	if (dr_devx_query_gvmi(ppdv.ppc2.ibctx, &vhca_id_2)) {
+		ERR("failed to get vhca_id of 2");
+		return 2;
+	}
+	INFO("vhca_id of 2: %#x\n", vhca_id_2);
+
+	uint32_t pdn = get_pdn(ppdv.ppc.pd);
+	if (pdn == 0xffffffff) {
+		return 3;
+	}
+	INFO("pdn of 1: %#x\n", pdn);
+
+	// Set the mkey to be accesseable by alias mkey
+	uint8_t access_key[32];
+	for (int i = 0; i < 32; i++) {
+		access_key[i] = 'a' + i;
+	}
+	for (int i = 0; i < PP_MAX_WR; i++) {
+		uint32_t lkey = ppdv.ppc2.alias_mkey[i];
+		INFO("%d lkey %#x\n", i, lkey);
+		ret = allow_other_vhca_access(ppdv.ppc2.ibctx,
+					access_key,
+					32,
+					lkey);
+		if (ret != true) {
+			ERR("failed to set other vhca access %d\n", i);
+			return 2;
+		}
+	}
+
+	for (int i = 0; i < PP_MAX_WR; i++) {
+		uint32_t lkey = ppdv.ppc2.alias_mkey[i];
+		uint32_t alias_mkey;
+		struct mlx5dv_devx_obj *obj = create_alias_mkey_obj(ppdv.ppc.ibctx,
+					vhca_id_2,
+					lkey,
+					access_key,
+					32,
+					pdn,	
+					&alias_mkey);
+		if (obj == NULL) {
+			return 3;
+		}
+		ppdv.ppc.alias_mkey_obj[i] = obj;
+		ppdv.ppc.alias_mkey[i] = alias_mkey;
+		ppdv.ppc.alias_mkey_mrbuf[i] = ppdv.ppc2.mrbuf[i];
+
+		// TEMP:Use the alias mkey to cover the mr. then we do not need to change those code.
+		ppdv.ppc.mr[i]->lkey = alias_mkey;
+		ppdv.ppc.mrbuf[i] = ppdv.ppc2.mrbuf[i];
+	}
 
 	ret = pp_create_cq_dv(&ppdv.ppc, &ppdv.cq);
 	if (ret)

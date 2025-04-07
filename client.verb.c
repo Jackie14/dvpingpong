@@ -72,13 +72,9 @@ int main(int argc, char *argv[])
 	}
 	INFO("IB device %s, server ip %s\n", ibv_devname, SERVER_IP);
 
-	ret = pp_ctx_init(&ppv_ctx.ppc, ibv_devname, 0, NULL);
+	ret = pp_ctx_init(&ppv_ctx.ppc, ibv_devname, 0, NULL, false);
 	if (ret)
 		return ret;
-
-	//ret = pp_ctx_init(&ppv_ctx.ppc2, "mlx5_3", 0, NULL);
-	//if (ret)
-	//	return ret;
 
 	ret = pp_create_cq_qp_verb(&ppv_ctx.ppc, &ppv_ctx.cqqp);
 	if (ret)

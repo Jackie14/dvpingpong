@@ -1,4 +1,5 @@
 #include "pp_common.h"
+#include "mlx5_ifc.h"
 
 static inline char *get_link_layer_str(int layer)
 {
@@ -43,6 +44,16 @@ static int pp_open_ibvdevice(const char *ibv_devname, struct pp_context *ppctx)
 		return errno;
 	}
 
+	//INFO("show port list\n");
+	//for (int i = 1; i < 10; i++) {
+	//	ret = ibv_query_port(ppctx->ibctx, i, &ppctx->port_attr);
+	//	if (ret) {
+	//		perror("ibv_query_port");
+	//		return ret;
+	//	}
+	//	INFO("ibdev %s port %d port_state %d (expect %d) phy_state %d\n", ibv_devname, ppctx->port_num,
+	//	     ppctx->port_attr.state, IBV_PORT_ACTIVE, ppctx->port_attr.phys_state);
+	//}
 	ppctx->port_num = PORT_NUM;
 	do {
 		ret = ibv_query_port(ppctx->ibctx, PORT_NUM, &ppctx->port_attr);
@@ -80,9 +91,65 @@ static void pp_close_ibvdevice(struct ibv_context *ibctx)
 		perror("mz_close_ibvdevice");
 }
 
+static struct mlx5dv_devx_obj *buf_mkey_obj_create(struct ibv_context *ibv_ctx,
+						       uint32_t pd_id,
+						       uint32_t umem_id,
+						       uint8_t *buf,
+						       size_t buf_size,
+						       uint32_t *mkey)
+{
+	uint32_t out[DEVX_ST_SZ_DW(create_mkey_out)] = {0};
+	uint32_t in[DEVX_ST_SZ_DW(create_mkey_in)] = {0};
+	void *mkc = DEVX_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
+	size_t pgsize = sysconf(_SC_PAGESIZE);
+	uint64_t aligned_mkey_obj = (buf_size + pgsize - 1) & ~(pgsize - 1);
+	uint32_t translation_size = (aligned_mkey_obj * 8) / 16;
+	uint32_t log_page_size = __builtin_ffs(pgsize) - 1;
+
+	DEVX_SET(create_mkey_in, in, opcode, MLX5_CMD_OP_CREATE_MKEY);
+	DEVX_SET(create_mkey_in, in, translations_octword_actual_size, translation_size);
+	DEVX_SET(create_mkey_in, in, mkey_umem_id, umem_id);
+	DEVX_SET(mkc, mkc, access_mode_1_0, 0x1);
+	DEVX_SET(mkc, mkc, lw, 0x1);
+	DEVX_SET(mkc, mkc, lr, 0x1);
+	DEVX_SET(mkc, mkc, rw, 0x1);
+	DEVX_SET(mkc, mkc, rr, 0x1);
+	DEVX_SET(mkc, mkc, qpn, 0xffffff);
+	DEVX_SET(mkc, mkc, pd, pd_id);
+	DEVX_SET(mkc, mkc, mkey_7_0, umem_id & 0xFF);
+	DEVX_SET(mkc, mkc, log_entity_size, log_page_size);
+	DEVX_SET(mkc, mkc, translations_octword_size, translation_size);
+	DEVX_SET64(mkc, mkc, start_addr, (uint64_t)buf);
+	DEVX_SET64(mkc, mkc, len, buf_size);
+
+	struct mlx5dv_devx_obj *obj = mlx5dv_devx_obj_create(ibv_ctx, in, sizeof(in), out, sizeof(out));
+	if (!obj) {
+		ERR("devx obj create failed %d", errno);
+		return NULL;
+	}
+
+	*mkey = (DEVX_GET(create_mkey_out, out, mkey_index) << 8) | (umem_id & 0xFF);
+	return obj;
+}
+
+static uint32_t get_pdn(struct ibv_pd *pd)
+{
+	struct mlx5dv_pd dv_pd = {};
+	struct mlx5dv_obj obj = {};
+	int ret;
+
+	obj.pd.in = pd;
+	obj.pd.out = &dv_pd;
+	ret = mlx5dv_init_obj(&obj, MLX5DV_OBJ_PD);
+	if (ret) {
+		ERR("mlx5dv_init_obj(PD) failed\n");
+		return 0xffffffff;
+	}
+	return dv_pd.pdn;
+}
 
 int pp_ctx_init(struct pp_context *pp, const char *ibv_devname,
-		int use_vfio, const char *vfio_pci_name)
+		int use_vfio, const char *vfio_pci_name, bool use_devx)
 {
 	struct mlx5dv_vfio_context_attr vfio_ctx_attr = {
 		.pci_name = vfio_pci_name,
@@ -140,6 +207,30 @@ int pp_ctx_init(struct pp_context *pp, const char *ibv_devname,
 			ERR("%d: ibv_reg_mr() failed\n", i);
 			ret = errno;
 			goto fail_reg_mr;
+		}
+
+		if (use_devx){
+		struct mlx5dv_devx_umem *umem;
+		umem = mlx5dv_devx_umem_reg(pp->ibctx, pp->mrbuf[i], pp->mrbuflen, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE);
+		if (!umem) {
+			ERR("umem reg failed port %zu", pp->mrbuflen);
+			goto fail_memalign;
+		}
+
+		uint32_t mkey = 0;
+		struct mlx5dv_devx_obj *obj = buf_mkey_obj_create(pp->ibctx, get_pdn(pp->pd), umem->umem_id, pp->mrbuf[i], pp->mrbuflen, &mkey);
+		if (!obj) {
+			ERR("mkey create failed");
+			goto fail_memalign;
+		}
+
+		pp->alias_mkey_obj[i] = obj;
+		pp->alias_mkey[i] = mkey;
+		pp->alias_mkey_mrbuf[i] = pp->mrbuf[i];
+	
+		INFO("%d devx lkey %#x\n", i, pp->alias_mkey[i]);
+		} else {
+		INFO("%d mr lkey %#x\n", i, pp->mr[i]->lkey);
 		}
 	}
 

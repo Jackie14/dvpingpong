@@ -2,7 +2,7 @@
 #include "pp_verb.h"
 
 static char ibv_devname[100] = "mlx5_3";
-static int server_sgid_idx = 1;
+static int server_sgid_idx = 3;
 
 static struct pp_verb_ctx ppv_ctx;
 static struct pp_exchange_info client = {};
@@ -65,7 +65,7 @@ int main(int argc, char *argv[])
 	}
 	INFO("IB device %s\n", ibv_devname);
 
-	ret = pp_ctx_init(&ppv_ctx.ppc, ibv_devname, 0, NULL);
+	ret = pp_ctx_init(&ppv_ctx.ppc, ibv_devname, 0, NULL, false);
 	if (ret)
 		return ret;
 

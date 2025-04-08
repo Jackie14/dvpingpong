@@ -19,23 +19,25 @@ static int server_traffic_verb(struct pp_verb_ctx *ppv)
 	struct ibv_sge sglists[PP_MAX_WR] = {};
 	int max_wr_num = PP_MAX_WR, ret;
 
-	prepare_recv_wr_verb(ppv, wrr, sglists, max_wr_num, PP_RECV_WRID_SERVER);
+	for (int i = 0; i < 2; i++) {
+		prepare_recv_wr_verb(ppv, wrr, sglists, max_wr_num, PP_RECV_WRID_SERVER);
 
-	INFO("Waiting for data...\n");
-	/* 1. Recv "ping" */
-	ret = ibv_post_recv(ppv->cqqp.qp, wrr, &bad_wrr);
-	if (ret) {
-		ERR("%d: ibv_post_send failed %d\n", max_wr_num, ret);
-		return ret;
+		INFO("Waiting for data...\n");
+		/* 1. Recv "ping" */
+		ret = ibv_post_recv(ppv->cqqp.qp, wrr, &bad_wrr);
+		if (ret) {
+			ERR("%d: ibv_post_send failed %d\n", max_wr_num, ret);
+			return ret;
+		}
+
+		ret = poll_cq_verb(ppv, max_wr_num, true);
+		if (ret) {
+			ERR("poll_cq_verb failed\n");
+			return ret;
+		}
 	}
 
-	ret = poll_cq_verb(ppv, max_wr_num, true);
-	if (ret) {
-		ERR("poll_cq_verb failed\n");
-		return ret;
-	}
-
-	sleep(2);
+	usleep(1000 * 1000 * 3);
 	INFO("Now sending reply (%d)...\n", max_wr_num);
 	prepare_send_wr_verb(ppv, wrs, sglists, &client, max_wr_num,
 			     PP_SEND_WRID_SERVER, PP_VERB_OPCODE_SERVER, false);

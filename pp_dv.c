@@ -58,6 +58,7 @@ struct mlx5dv_devx_obj *create_alias_mkey_obj(struct ibv_context *ibctx,
 		      const uint8_t *access_key,
 		      size_t access_key_size,
 		      uint32_t pdn,
+		      uint32_t mkey_modify_cqn,
 		      uint32_t *alias_mkey)
 {
 	uint32_t in[DEVX_ST_SZ_DW(create_alias_obj_in)] = {0};
@@ -80,9 +81,10 @@ struct mlx5dv_devx_obj *create_alias_mkey_obj(struct ibv_context *ibctx,
 	memcpy(access_key_addr, access_key, access_key_size);
 
 	// what is this pdn
-	void *metadata = DEVX_ADDR_OF(alias_context, alias_ctx, metadata);
-	uint32_t swaped_pdn = htobe32(pdn);
-	memcpy(metadata, &swaped_pdn, sizeof(swaped_pdn));
+	void *metadata = DEVX_ADDR_OF(alias_context, alias_ctx, alias_metadata);
+	DEVX_SET(alias_ctx_metadata_mkey, metadata, pdn, pdn);
+	DEVX_SET(alias_ctx_metadata_mkey, metadata, mkey_error_modify_en, 1);
+	DEVX_SET(alias_ctx_metadata_mkey, metadata, mkey_error_modify_cqn, mkey_modify_cqn);
 
 	struct mlx5dv_devx_obj *obj = mlx5dv_devx_obj_create(ibctx, in, sizeof(in), out, sizeof(out));
 	if (!obj) {
@@ -449,7 +451,7 @@ int pp_create_qp_dv(const struct pp_context *ppc,
 
 	dvcq->dvqp = dvqp;
 
-	INFO("dv: QP %d created; sq.wqe_cnt %d(log_sq_size %d), rq.wqe_cnt %d(log_rq_size %d), rq_wqe_shift %d\n",
+	INFO("dv: QP %#x created; sq.wqe_cnt %d(log_sq_size %d), rq.wqe_cnt %d(log_rq_size %d), rq_wqe_shift %d\n",
 	     dvqp->qpn, dvqp->sq.wqe_cnt, ilog32(dvqp->sq.wqe_cnt - 1),
 	     dvqp->rq.wqe_cnt, ilog32(dvqp->rq.wqe_cnt - 1), dvqp->rq.wqe_shift);
 
@@ -509,7 +511,7 @@ static int dvqp_rst2init(const struct pp_context *ppc, struct pp_dv_qp *dvqp)
 		return ret;
 	}
 
-	INFO("qp %d moved to INIT state, port_num %d\n", dvqp->qpn, ppc->port_num);
+	INFO("qp %#x moved to INIT state, port_num %d\n", dvqp->qpn, ppc->port_num);
 	return 0;
 }
 
@@ -560,7 +562,7 @@ static int dvqp_init2rtr(const struct pp_context *ppc,
 		return ret;
 	}
 
-	INFO("qp %d moved to RTR state, dmac(hard-coded) %02x:%02x:%02x:%02x:%02x:%02x, peer.qpn %d\n",
+	INFO("qp %#x moved to RTR state, dmac(hard-coded) %02x:%02x:%02x:%02x:%02x:%02x, peer.qpn %d\n",
 	     dvqp->qpn, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5], peer->qpn);
 	return 0;
 }
@@ -593,7 +595,7 @@ static int dvqp_rtr2rts(const struct pp_context *ppc, uint32_t my_sq_psn,
 		return ret;
 	}
 
-	INFO("qp %d moved to RTS state\n", dvqp->qpn);
+	INFO("qp %#x moved to RTS state\n", dvqp->qpn);
 	return 0;
 }
 
@@ -646,6 +648,7 @@ static void post_send_one(const struct pp_context *ppc, struct pp_dv_qp *dvqp,
 	int idx, size = 0;
 
 	idx = dvqp->sq.cur_post & (dvqp->sq.wqe_cnt - 1);
+	INFO("sq idx: %d, cur: %d, wqe_count: %d\n", idx, dvqp->sq.cur_post, dvqp->sq.wqe_cnt);
 
 	ctrl = dvqp->sq_start + (idx << MLX5_SEND_WQE_SHIFT);
 	*(uint32_t *)((void *)ctrl + 8) = 0;
@@ -720,8 +723,21 @@ static void *get_sw_cqe(struct pp_dv_cq *dvcq, int n)
 	       !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe)));
 
 	if (likely(mlx5dv_get_cqe_opcode(cqe64) != MLX5_CQE_INVALID) &&
-	    !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe)))
+	    !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe))) {
+	    //                                                 1 0000 0000
+	    //						if n < 256  & ==> 0
+	    // 		1^0 ==>1  --不OK
+	    //          0^0 ==>0  --OK
+	    //                                          if n >= 256 & ==> 1
+	    //          1^1 ==>0  --OK
+	    //          0^1 ==>1  --不OK
+	    //						if n 
+	    DVDBG("cqbuf %p n %d cqe_sz %d ncqe %d cqe64 %p owner 0x%x, opcde 0x%x final %d\n",
+	       dvcq->buf, n, dvcq->cqe_sz, dvcq->ncqe, cqe64,
+	       mlx5dv_get_cqe_owner(cqe64), mlx5dv_get_cqe_opcode(cqe64),
+	       !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe)));
 		return cqe64;
+	    }
 	else
 		return NULL;
 }

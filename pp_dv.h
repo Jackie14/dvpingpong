@@ -60,6 +60,7 @@ struct pp_dv_ctx {
 	struct pp_context ppc;
 	struct pp_context ppc2;
 	struct pp_dv_cq cq;
+	struct pp_dv_cq mkey_modify_cq;
 	struct pp_dv_qp qp;
 };
 
@@ -91,6 +92,7 @@ struct mlx5dv_devx_obj *create_alias_mkey_obj(struct ibv_context *ibctx,
 		      const uint8_t *access_key,
 		      size_t access_key_size,
 		      uint32_t pdn,
+		      uint32_t mkey_modify_cqn,
 		      uint32_t *alias_mkey);
 
 int dr_devx_query_gvmi(struct ibv_context *ctx, uint16_t *gvmi);

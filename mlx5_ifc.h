@@ -3939,6 +3939,17 @@ struct mlx5_ifc_create_cq_in_bits {
 	u8          pas[][0x40];
 };
 
+struct mlx5_ifc_alias_ctx_metadata_mkey_bits {   /* Little Endian */
+        uint8_t                    pdn[0x00020];
+        /*----------------------------------------------------------*/
+        uint8_t                    mkey_error_modify_en[0x00001];                  /* CQN of the CQ receiving MKey Error CQE. */
+        uint8_t                    reserved_at_21[0x00007];
+        uint8_t                    mkey_error_modify_cqn[0x00018];                 /* If set, the Mkey may be modified during access error to allow the operation to complete successfully. */
+        /*----------------------------------------------------------*/
+        uint8_t                    reserved_at_40[0x00040];
+/* --------------------------------------------------------- */
+};
+
 struct mlx5_ifc_alias_context_bits {
 	uint8_t vhca_id_to_be_accessed[0x10];
 	uint8_t reserved_at_10[0xd];
@@ -3950,7 +3961,8 @@ struct mlx5_ifc_alias_context_bits {
 
 	uint8_t access_key[8][0x20];
 
-	uint8_t metadata[4][0x20];
+	struct mlx5_ifc_alias_ctx_metadata_mkey_bits alias_metadata;
+	//uint8_t metadata[4][0x20];
 };
 
 struct mlx5_ifc_create_alias_obj_in_bits {

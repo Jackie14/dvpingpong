@@ -1,6 +1,6 @@
+#include <pthread.h>
 #include "pp_common.h"
 #include "pp_dv.h"
-
 
 #define SERVER_IP "192.168.167.168"
 
@@ -30,23 +30,29 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 		*ppdv->ppc.mrbuf[i] = i % ('z' - '0') + '0';
 	}
 
-	ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
-			      opcode, IBV_SEND_SIGNALED);
-	if (ret) {
-		ERR("pp_dv_post_send failed\n");
-		return ret;
-	}
-
-	num_comp = 0;
-	while (num_comp < num_post) {
-		ret = pp_dv_poll_cq(&ppdv->cq, 1);
-		usleep(1000 * 10);
-		if (ret == CQ_POLL_ERR) {
-			ERR("poll_cq(send) failed %d, %d/%d\n", ret, num_comp, num_post);
+	for (int i = 0; i < 2; i++) {
+		INFO("start to pp_dv_post_send\n");
+		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
+				opcode, IBV_SEND_SIGNALED);
+		if (ret) {
+			ERR("pp_dv_post_send failed\n");
 			return ret;
 		}
-		if (ret > 0)
-			num_comp++;
+
+		INFO("after pp_dv_post_send\n");
+		num_comp = 0;
+		while (num_comp < num_post) {
+			ret = pp_dv_poll_cq(&ppdv->cq, 1);
+			usleep(1000 * 10);
+			if (ret == CQ_POLL_ERR) {
+				ERR("poll_cq(send) failed %d, %d/%d\n", ret, num_comp, num_post);
+				return ret;
+			}
+			if (ret > 0)
+				num_comp++;
+		}
+		if (i == 0)
+			usleep(1000 * 1000 * 20);
 	}
 
 	/* Reset the buffer so that we can check it the received data is expected */
@@ -77,6 +83,25 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 	return 0;
 }
 
+void *polling_mkey_modify_cq(void *arg)
+{
+	INFO("Start polling_mkey_modify_cq\n");
+	(void)arg;
+	while (true) {
+		int ret = pp_dv_poll_cq(&(ppdv.mkey_modify_cq), 1);
+		if (ret == CQ_POLL_ERR) {
+			ERR("polling_mkey_modify_cq failed %d\n", ret);
+			return NULL;
+		}
+
+		if (ret > 0) {
+			INFO("polling_mkey_modify_cq got %d\n", ret);
+		}
+		usleep(1000 * 10);
+	}
+	return NULL;
+}
+
 int main(int argc, char *argv[])
 {
 	int ret;
@@ -93,6 +118,13 @@ int main(int argc, char *argv[])
 	ret = pp_ctx_init(&ppdv.ppc2, "mlx5_1", 0, NULL, true);
 	if (ret)
 		return ret;
+
+	uint16_t vhca_id_1;
+	if (dr_devx_query_gvmi(ppdv.ppc.ibctx, &vhca_id_1)) {
+		ERR("failed to get vhca_id of 1");
+		return 2;
+	}
+	INFO("vhca_id of 1: %#x\n", vhca_id_1);
 
 	uint16_t vhca_id_2;
 	if (dr_devx_query_gvmi(ppdv.ppc2.ibctx, &vhca_id_2)) {
@@ -125,6 +157,19 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	ret = pp_create_cq_dv(&ppdv.ppc, &ppdv.mkey_modify_cq);
+	if (ret) {
+		ERR("failed to pp_create_cq_dv mkey_modify_cq\n");
+		return 3;
+	}
+
+    	pthread_t thread;
+    	if (pthread_create(&thread, NULL, polling_mkey_modify_cq, 0) != 0) {
+        	ERR("Failed to create thread");
+        	return 1;
+    	}
+    	pthread_detach(thread);
+
 	for (int i = 0; i < PP_MAX_WR; i++) {
 		uint32_t lkey = ppdv.ppc2.alias_mkey[i];
 		uint32_t alias_mkey;
@@ -134,6 +179,7 @@ int main(int argc, char *argv[])
 					access_key,
 					32,
 					pdn,	
+					ppdv.mkey_modify_cq.cqn,
 					&alias_mkey);
 		if (obj == NULL) {
 			return 3;

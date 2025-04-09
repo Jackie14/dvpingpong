@@ -19,7 +19,7 @@ static int server_traffic_verb(struct pp_verb_ctx *ppv)
 	struct ibv_sge sglists[PP_MAX_WR] = {};
 	int max_wr_num = PP_MAX_WR, ret;
 
-	for (int i = 0; i < 2; i++) {
+	for (int i = 0; i < 32; i++) {
 		prepare_recv_wr_verb(ppv, wrr, sglists, max_wr_num, PP_RECV_WRID_SERVER);
 
 		INFO("Waiting for data...\n");

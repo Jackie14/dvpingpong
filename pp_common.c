@@ -148,6 +148,31 @@ static uint32_t get_pdn(struct ibv_pd *pd)
 	return dv_pd.pdn;
 }
 
+static int dr_devx_query_gvmi(struct ibv_context *ctx, uint16_t *gvmi)
+{
+	uint32_t out[DEVX_ST_SZ_DW(query_hca_cap_out)] = {};
+	uint32_t in[DEVX_ST_SZ_DW(query_hca_cap_in)] = {};
+	int err;
+
+	DEVX_SET(query_hca_cap_in, in, opcode, MLX5_CMD_OP_QUERY_HCA_CAP);
+	//DEVX_SET(query_hca_cap_in, in, other_function, other_vport);
+	//DEVX_SET(query_hca_cap_in, in, function_id, vport_number);
+	DEVX_SET(query_hca_cap_in, in, op_mod,
+		 MLX5_SET_HCA_CAP_OP_MOD_GENERAL_DEVICE |
+		 HCA_CAP_OPMOD_GET_CUR);
+
+	err = mlx5dv_devx_general_cmd(ctx, in, sizeof(in), out, sizeof(out));
+	if (err) {
+		//err = mlx5_get_cmd_status_err(err, out);
+		//ERR("Query general failed %d\n", err);
+		ERR("Query general failed\n");
+		return err;
+	}
+
+	*gvmi = DEVX_GET(query_hca_cap_out, out, capability.cmd_hca_cap.vhca_id);
+	return 0;
+}
+
 int pp_ctx_init(struct pp_context *pp, const char *ibv_devname,
 		int use_vfio, const char *vfio_pci_name, bool use_devx)
 {
@@ -180,25 +205,50 @@ int pp_ctx_init(struct pp_context *pp, const char *ibv_devname,
 		}
 		pp->port_num = PORT_NUM;
 	} else {
+		if (pp->ibctx) {
+			pp_close_ibvdevice(pp->ibctx);
+			pp->ibctx = NULL;
+		}
 		ret = pp_open_ibvdevice(ibv_devname, pp);
 		if (ret)
 			return ret;
 	}
 
+	if (pp->pd) {
+		INFO("pdn before free: %#x\n", pp->pdn);
+		ibv_dealloc_pd(pp->pd);
+		pp->pd = NULL;
+		pp->pdn = 0;
+	}
 	pp->pd = ibv_alloc_pd(pp->ibctx);
 	if (!pp->pd) {
 		ERR("ibv_alloc_pd() failed\n");
 		ret = errno;
 		goto fail_alloc_pd;
 	}
+	
+	pp->pdn = get_pdn(pp->pd);
+	INFO("pdn: %#x\n", pp->pdn);
+
+	uint16_t vhca_id;
+	if (dr_devx_query_gvmi(pp->ibctx, &vhca_id)) {
+		ERR("failed to get vhca_id");
+		goto fail_alloc_pd;
+		return 2;
+	}
+	pp->vhca_id = vhca_id;
+	INFO("vhca_id: %#x\n", pp->vhca_id);
+
 
 	pp->mrbuflen = PP_DATA_BUF_LEN;
 	for (i = 0; i < PP_MAX_WR; i++) {
-		pp->mrbuf[i] = memalign(sysconf(_SC_PAGESIZE), pp->mrbuflen);
 		if (!pp->mrbuf[i]) {
-			ERR("%d: memalign(0x%lx) failed\n", i, pp->mrbuflen);
-			ret = errno;
-			goto fail_memalign;
+			pp->mrbuf[i] = memalign(sysconf(_SC_PAGESIZE), pp->mrbuflen);
+			if (!pp->mrbuf[i]) {
+				ERR("%d: memalign(0x%lx) failed\n", i, pp->mrbuflen);
+				ret = errno;
+				goto fail_memalign;
+			}
 		}
 
 		pp->mr[i] = ibv_reg_mr(pp->pd, pp->mrbuf[i], pp->mrbuflen,
@@ -210,27 +260,29 @@ int pp_ctx_init(struct pp_context *pp, const char *ibv_devname,
 		}
 
 		if (use_devx){
-		struct mlx5dv_devx_umem *umem;
-		umem = mlx5dv_devx_umem_reg(pp->ibctx, pp->mrbuf[i], pp->mrbuflen, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE);
-		if (!umem) {
+		pp->umem_obj[i] = mlx5dv_devx_umem_reg(pp->ibctx, pp->mrbuf[i], pp->mrbuflen, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE);
+		if (!pp->umem_obj) {
 			ERR("umem reg failed port %zu", pp->mrbuflen);
 			goto fail_memalign;
 		}
 
+		if (pp->mkey_obj[i])
+			mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
+
 		uint32_t mkey = 0;
-		struct mlx5dv_devx_obj *obj = buf_mkey_obj_create(pp->ibctx, get_pdn(pp->pd), umem->umem_id, pp->mrbuf[i], pp->mrbuflen, &mkey);
+		struct mlx5dv_devx_obj *obj = buf_mkey_obj_create(pp->ibctx, pp->pdn, pp->umem_obj[i]->umem_id, pp->mrbuf[i], pp->mrbuflen, &mkey);
 		if (!obj) {
 			ERR("mkey create failed");
 			goto fail_memalign;
 		}
 
-		pp->alias_mkey_obj[i] = obj;
-		pp->alias_mkey[i] = mkey;
-		pp->alias_mkey_mrbuf[i] = pp->mrbuf[i];
+		pp->mkey_obj[i] = obj;
+		pp->mkey[i] = mkey;
+		pp->mkey_mrbuf[i] = pp->mrbuf[i];
 	
-		INFO("%d devx lkey %#x\n", i, pp->alias_mkey[i]);
+		INFO("%d devx mkey %#x\n", i, pp->mkey[i]);
 		} else {
-		INFO("%d mr lkey %#x\n", i, pp->mr[i]->lkey);
+		INFO("%d mr mkey %#x\n", i, pp->mr[i]->lkey);
 		}
 	}
 

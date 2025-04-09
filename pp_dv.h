@@ -97,3 +97,8 @@ struct mlx5dv_devx_obj *create_alias_mkey_obj(struct ibv_context *ibctx,
 
 int dr_devx_query_gvmi(struct ibv_context *ctx, uint16_t *gvmi);
 uint32_t get_pdn(struct ibv_pd *pd);
+
+int pp_init_mkey(struct pp_context *pp);
+int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint32_t modify_mkey_cqn);
+int pp_allow_other_vhca_access(struct pp_context *pp);
+void pp_destroy_mkey(struct pp_context *pp);

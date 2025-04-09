@@ -1,4 +1,5 @@
 #include <pthread.h>
+#include <signal.h>
 #include "pp_common.h"
 #include "pp_dv.h"
 
@@ -30,7 +31,7 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 		*ppdv->ppc.mrbuf[i] = i % ('z' - '0') + '0';
 	}
 
-	for (int i = 0; i < 2; i++) {
+	for (int i = 0; i < 32; i++) {
 		INFO("start to pp_dv_post_send\n");
 		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
 				opcode, IBV_SEND_SIGNALED);
@@ -51,8 +52,8 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 			if (ret > 0)
 				num_comp++;
 		}
-		if (i == 0)
-			usleep(1000 * 1000 * 20);
+		if (i < 32)
+			usleep(1000 * 1000 * 1);
 	}
 
 	/* Reset the buffer so that we can check it the received data is expected */
@@ -95,15 +96,40 @@ void *polling_mkey_modify_cq(void *arg)
 		}
 
 		if (ret > 0) {
-			INFO("polling_mkey_modify_cq got %d\n", ret);
+			INFO("polling_mkey_modify_cq got Mkey Modify CQE\n");
+			INFO("start to rebuild mkey and alias mkey\n");
+			
+			//usleep(1000 * 1000 * 2);
+			//ret = pp_ctx_init(&ppdv.ppc2, "mlx5_7", 0, NULL, true);
+			//pp_allow_other_vhca_access(&ppdv.ppc2);
+			pp_init_mkey(&ppdv.ppc2);
+			pp_init_alias_mkey(&ppdv.ppc, &ppdv.ppc2, ppdv.mkey_modify_cq.cqn);
 		}
 		usleep(1000 * 10);
 	}
 	return NULL;
 }
 
+void sig_handler(int sig) {
+    switch(sig)
+    {
+        case SIGUSR1:
+	    pp_destroy_mkey(&(ppdv.ppc2));
+            break;
+
+        case SIGUSR2:
+            break;
+
+        default :
+            break;
+    }
+}
+
 int main(int argc, char *argv[])
 {
+    	signal(SIGUSR1, sig_handler);
+    	signal(SIGUSR2, sig_handler);
+
 	int ret;
 
 	if (argv[1]) {
@@ -115,29 +141,9 @@ int main(int argc, char *argv[])
 	if (ret)
 		return ret;
 
-	ret = pp_ctx_init(&ppdv.ppc2, "mlx5_1", 0, NULL, true);
+	ret = pp_ctx_init(&ppdv.ppc2, "mlx5_7", 0, NULL, true);
 	if (ret)
 		return ret;
-
-	uint16_t vhca_id_1;
-	if (dr_devx_query_gvmi(ppdv.ppc.ibctx, &vhca_id_1)) {
-		ERR("failed to get vhca_id of 1");
-		return 2;
-	}
-	INFO("vhca_id of 1: %#x\n", vhca_id_1);
-
-	uint16_t vhca_id_2;
-	if (dr_devx_query_gvmi(ppdv.ppc2.ibctx, &vhca_id_2)) {
-		ERR("failed to get vhca_id of 2");
-		return 2;
-	}
-	INFO("vhca_id of 2: %#x\n", vhca_id_2);
-
-	uint32_t pdn = get_pdn(ppdv.ppc.pd);
-	if (pdn == 0xffffffff) {
-		return 3;
-	}
-	INFO("pdn of 1: %#x\n", pdn);
 
 	// Set the mkey to be accesseable by alias mkey
 	uint8_t access_key[32];
@@ -145,12 +151,12 @@ int main(int argc, char *argv[])
 		access_key[i] = 'a' + i;
 	}
 	for (int i = 0; i < PP_MAX_WR; i++) {
-		uint32_t lkey = ppdv.ppc2.alias_mkey[i];
-		INFO("%d lkey %#x\n", i, lkey);
+		uint32_t mkey = ppdv.ppc2.mkey[i];
+		INFO("%d mkey %#x\n", i, mkey);
 		ret = allow_other_vhca_access(ppdv.ppc2.ibctx,
 					access_key,
 					32,
-					lkey);
+					mkey);
 		if (ret != true) {
 			ERR("failed to set other vhca access %d\n", i);
 			return 2;
@@ -171,14 +177,14 @@ int main(int argc, char *argv[])
     	pthread_detach(thread);
 
 	for (int i = 0; i < PP_MAX_WR; i++) {
-		uint32_t lkey = ppdv.ppc2.alias_mkey[i];
+		uint32_t mkey = ppdv.ppc2.mkey[i];
 		uint32_t alias_mkey;
 		struct mlx5dv_devx_obj *obj = create_alias_mkey_obj(ppdv.ppc.ibctx,
-					vhca_id_2,
-					lkey,
+					ppdv.ppc2.vhca_id,
+					mkey,
 					access_key,
 					32,
-					pdn,	
+					ppdv.ppc.pdn,	
 					ppdv.mkey_modify_cq.cqn,
 					&alias_mkey);
 		if (obj == NULL) {
@@ -190,7 +196,7 @@ int main(int argc, char *argv[])
 
 		// TEMP:Use the alias mkey to cover the mr. then we do not need to change those code.
 		ppdv.ppc.mr[i]->lkey = alias_mkey;
-		ppdv.ppc.mrbuf[i] = ppdv.ppc2.mrbuf[i];
+		ppdv.ppc.mrbuf[i] = ppdv.ppc.alias_mkey_mrbuf[i];
 	}
 
 	ret = pp_create_cq_dv(&ppdv.ppc, &ppdv.cq);

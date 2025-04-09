@@ -4002,4 +4002,5 @@ struct mlx5_ifc_allow_other_vhca_access_out_bits {
 	uint8_t reserved_at_40[0x40];
 };
 
+
 #endif /* MLX5_IFC_H */

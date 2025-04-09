@@ -16,7 +16,46 @@
 enum {
 	MLX5_GEN_OBJ_TYPE_MKEY = 0xff01,
 };
+static struct mlx5dv_devx_obj *buf_mkey_obj_create(struct ibv_context *ibv_ctx,
+						       uint32_t pd_id,
+						       uint32_t umem_id,
+						       uint8_t *buf,
+						       size_t buf_size,
+						       uint32_t *mkey)
+{
+	uint32_t out[DEVX_ST_SZ_DW(create_mkey_out)] = {0};
+	uint32_t in[DEVX_ST_SZ_DW(create_mkey_in)] = {0};
+	void *mkc = DEVX_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
+	size_t pgsize = sysconf(_SC_PAGESIZE);
+	uint64_t aligned_mkey_obj = (buf_size + pgsize - 1) & ~(pgsize - 1);
+	uint32_t translation_size = (aligned_mkey_obj * 8) / 16;
+	uint32_t log_page_size = __builtin_ffs(pgsize) - 1;
 
+	DEVX_SET(create_mkey_in, in, opcode, MLX5_CMD_OP_CREATE_MKEY);
+	DEVX_SET(create_mkey_in, in, translations_octword_actual_size, translation_size);
+	DEVX_SET(create_mkey_in, in, mkey_umem_id, umem_id);
+	DEVX_SET(mkc, mkc, access_mode_1_0, 0x1);
+	DEVX_SET(mkc, mkc, lw, 0x1);
+	DEVX_SET(mkc, mkc, lr, 0x1);
+	DEVX_SET(mkc, mkc, rw, 0x1);
+	DEVX_SET(mkc, mkc, rr, 0x1);
+	DEVX_SET(mkc, mkc, qpn, 0xffffff);
+	DEVX_SET(mkc, mkc, pd, pd_id);
+	DEVX_SET(mkc, mkc, mkey_7_0, umem_id & 0xFF);
+	DEVX_SET(mkc, mkc, log_entity_size, log_page_size);
+	DEVX_SET(mkc, mkc, translations_octword_size, translation_size);
+	DEVX_SET64(mkc, mkc, start_addr, (uint64_t)buf);
+	DEVX_SET64(mkc, mkc, len, buf_size);
+
+	struct mlx5dv_devx_obj *obj = mlx5dv_devx_obj_create(ibv_ctx, in, sizeof(in), out, sizeof(out));
+	if (!obj) {
+		ERR("devx obj create failed %d", errno);
+		return NULL;
+	}
+
+	*mkey = (DEVX_GET(create_mkey_out, out, mkey_index) << 8) | (umem_id & 0xFF);
+	return obj;
+}
 
 bool allow_other_vhca_access(struct ibv_context *ibctx,
 			     const uint8_t *access_key,
@@ -517,7 +556,7 @@ static int dvqp_rst2init(const struct pp_context *ppc, struct pp_dv_qp *dvqp)
 
 /* FIXME: For RoCE currently dmac is hard-coded */
 //static uint8_t dmac[6] = {0x02, 0x72, 0x18, 0xd5, 0x8d, 0x9b};
-static uint8_t dmac[6] = {0xa0, 0x88, 0xc2, 0x53, 0x01, 0x80};
+static uint8_t dmac[6] = {0xa0, 0x88, 0xc2, 0x53, 0x05, 0xa8};
 //static uint8_t dmac[6] = {0xec, 0x0d, 0x9a, 0x8a, 0x28, 0x2a};
 static int dvqp_init2rtr(const struct pp_context *ppc,
 			 const struct pp_exchange_info *peer,
@@ -742,6 +781,47 @@ static void *get_sw_cqe(struct pp_dv_cq *dvcq, int n)
 		return NULL;
 }
 
+typedef uint32_t uint32 ;
+struct cqe_error_syndrome_t {   /* Big Endian */
+        uint32                  hw_error_syndrome:8;                    /* Mellanox specific error HW syndrome. See separate documentation. */
+        uint32                  hw_syndrome_type:4;
+        uint32                  reserved_at_c:4;
+        uint32                  vendor_error_syndrome:8;                        /* Mellanox specific error syndrome. Undocumented.;For further information contact Mellanox technical support. */
+        uint32                  syndrome:8;                     /* IB compliant completion with error syndrome;0x1: Local_Length_Error;0x2: Local_QP_Operation_Error;0x4: Local_Protection_Error;0x5: Work_Request_Flushed_Error ;0x6: Memory_Window_Bind_Error;0x10: Bad_Response_Error;0x11: Local_Access_Error;0x12: Remote_Invalid_Request_Error;0x13: Remote_Access_Error;0x14: Remote_Operation_Error;0x15: Transport_Retry_Counter_Exceeded;0x16: RNR_Retry_Counter_Exceeded;0x22: Aborted_Error;other is Reserved;Syndrome is defined according to the InfiniBand Architecture ;Specification, Volume 1. For a detailed explanation of the syn;dromes, refer to the Software Transport Interface and Soft;ware Transport Verbs chapters of the IB specification. */
+/* --------------------------------------------------------- */
+};
+struct sw_cqe_mkey_err_t {      /* Big Endian */
+        uint32                  cqe_subtype:8;                  /* CQE notification type. */
+        uint32                  reserved_at_8:24;
+        /*----------------------------------------------------------*/
+        unsigned char                   reserved_at_20[12];
+        /*----------------------------------------------------------*/
+        uint32                  reserved_at_80:16;
+        uint32                  mkey_modification_type:8;                       /* Defines the modification performed to the MKey. */
+        uint32                  access_fail_type:8;                     /* Defines the operation that failed the memory access. */
+        /*----------------------------------------------------------*/
+        unsigned char                   reserved_at_a0[12];
+        /*----------------------------------------------------------*/
+        uint32                  reserved_at_100:8;
+        uint32                  access_fail_srqn_rmpn_xrqn:24;                  /* SRQ/RMP/XRC_SRQ/XRQ number that failed the memory access. */
+        /*----------------------------------------------------------*/
+        uint32                  access_fail_mkey;                       /* MKey modified due to access error. */
+        /*----------------------------------------------------------*/
+        unsigned char                   reserved_at_140[12];
+        /*----------------------------------------------------------*/
+        struct cqe_error_syndrome_t                     cqe_error_syndrome;
+        /*----------------------------------------------------------*/
+        uint32                  send_wqe_opcode:8;                      /* On requester - the send WQE opcode. */
+        uint32                  access_fail_qpn:24;                     /* QP that failed the memory access. */
+        /*----------------------------------------------------------*/
+        uint32                  wqe_counter:16;                 /* WQE index that failed memory access. */
+        uint32                  signature:8;
+        uint32                  opcode:4;
+        uint32                  reserved_at_1fc:3;
+        uint32                  owner:1;
+/* --------------------------------------------------------- */
+};
+
 static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 {
 //#if 0
@@ -787,9 +867,14 @@ static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 	} else if (opcode == MLX5_CQE_RESP_ERR) {
 		DVDBG("Error MLX5_CQE_RESP_ERR\n");
 		//++dvcq->qp->sq.tail;
-	} else {
+	} else if (opcode == 0xb) {
 		//idx = wqe_ctr & (dvcq->dvqp->sq.wqe_cnt - 1);
 		//dvcq->qp->sq.tail = dvcq->qp->sq.wqe_head[idx] + 1;
+		struct sw_cqe_mkey_err_t *mkey_err = (struct sw_cqe_mkey_err_t *)cqe64;
+		DVDBG("MLX5_CQE_MODIFY_MKEY, fail_type: %#x\n", mkey_err->access_fail_type);
+
+		return CQ_OK;
+	} else {
 		return CQ_OK;
 	}
 
@@ -797,6 +882,203 @@ static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 	return CQ_POLL_ERR;
 //#endif
 	return CQ_OK;
+}
+#if 0
+int pp_init_mkey(struct pp_context *pp)
+{
+	int ret = 0;
+	int i;
+	pp->mrbuflen = PP_DATA_BUF_LEN;
+	for (i = 0; i < PP_MAX_WR; i++) {
+		pp->mrbuf[i] = memalign(sysconf(_SC_PAGESIZE), pp->mrbuflen);
+		if (!pp->mrbuf[i]) {
+			ERR("%d: memalign(0x%lx) failed\n", i, pp->mrbuflen);
+			ret = errno;
+			goto fail_memalign;
+		}
+
+		pp->umem_obj[i] = mlx5dv_devx_umem_reg(pp->ibctx, pp->mrbuf[i], pp->mrbuflen,
+						       IBV_ACCESS_LOCAL_WRITE |
+						       IBV_ACCESS_REMOTE_READ |
+						       IBV_ACCESS_REMOTE_WRITE);
+		if (pp->umem_obj[i]) {
+			ERR("umem reg failed port %zu", pp->mrbuflen);
+			goto fail_umem;
+		}
+
+		uint32_t mkey = 0;
+		struct mlx5dv_devx_obj *obj;
+		obj = buf_mkey_obj_create(pp->ibctx, get_pdn(pp->pd), pp->umem_obj[i]->umem_id,
+					 pp->mrbuf[i], pp->mrbuflen, &mkey);
+		if (!obj) {
+			ERR("mkey create failed");
+			goto fail_mkey_create;
+		}
+
+		pp->alias_mkey_obj[i] = obj;
+		pp->alias_mkey[i] = mkey;
+		pp->alias_mkey_mrbuf[i] = pp->mrbuf[i];
+	
+		INFO("%d devx mkey %#x\n", i, pp->alias_mkey[i]);
+	}
+
+	return 0;
+
+fail_mkey_create:
+	for (i = 0; i < PP_MAX_WR; i++)
+		if (pp->alias_mkey_obj[i])
+			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[i]);
+fail_umem:
+	for (i = 0; i < PP_MAX_WR; i++)
+		if (pp->umem_obj[i])
+			mlx5dv_devx_umem_reg(pp->umem_obj[i]);
+fail_memalign:
+	for (i = 0; i < PP_MAX_WR; i++)
+		free(pp->mrbuf[i]);
+
+	return ret;
+}
+#endif
+
+int pp_init_mkey(struct pp_context *pp)
+{
+	int i;
+	pp->mrbuflen = PP_DATA_BUF_LEN;
+	for (i = 0; i < PP_MAX_WR; i++) {
+		#if 0
+		if (pp->umem_obj[i]) {
+			mlx5dv_devx_umem_dereg(pp->umem_obj[i]);
+			pp->umem_obj[i] = NULL;
+		}
+
+		pp->umem_obj[i] = mlx5dv_devx_umem_reg(pp->ibctx, pp->mrbuf[i], pp->mrbuflen,
+						       IBV_ACCESS_LOCAL_WRITE |
+						       IBV_ACCESS_REMOTE_READ |
+						       IBV_ACCESS_REMOTE_WRITE);
+		if (!pp->umem_obj[i]) {
+			ERR("umem reg failed port %zu", pp->mrbuflen);
+			goto fail_umem;
+		}
+
+		if (pp->mkey_obj[i]) {
+			mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
+			pp->mkey_obj[i] = NULL;
+		}
+		#endif
+
+		uint32_t mkey = 0;
+		struct mlx5dv_devx_obj *obj;
+		obj = buf_mkey_obj_create(pp->ibctx, pp->pdn, pp->umem_obj[i]->umem_id,
+					 pp->mrbuf[i], pp->mrbuflen, &mkey);
+		if (!obj) {
+			ERR("mkey create failed");
+			goto fail_mkey_create;
+		}
+
+		uint8_t access_key[32];
+		for (int i = 0; i < 32; i++) {
+			access_key[i] = 'a' + i;
+		}
+		int ret = allow_other_vhca_access(pp->ibctx,
+						access_key,
+						32,
+						mkey);
+		if (ret != true) {
+			ERR("failed to set other vhca access %d\n", i);
+			goto fail_mkey_create;
+		}
+
+		pp->mkey_obj[i] = obj;
+		pp->mkey[i] = mkey;
+		pp->mkey_mrbuf[i] = pp->mrbuf[i];
+	
+		INFO("%d devx mkey %#x\n", i, pp->mkey[i]);
+	}
+
+	return 0;
+
+fail_mkey_create:
+	for (i = 0; i < PP_MAX_WR; i++)
+		if (pp->mkey_obj[i])
+			mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
+#if 0
+fail_umem:
+	for (i = 0; i < PP_MAX_WR; i++)
+		if (pp->umem_obj[i])
+			mlx5dv_devx_umem_dereg(pp->umem_obj[i]);
+#endif
+	return 0;
+
+}
+
+void pp_destroy_mkey(struct pp_context *pp)
+{
+	for (int i = 0; i < PP_MAX_WR; i++) {
+		INFO("%d destroy devx mkey %#x\n", i, pp->mkey[i]);
+		if (pp->mkey_obj[i]) {
+			mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
+			pp->mkey_obj[i] = NULL;
+			pp->mkey[i] = 0;
+		}
+	}
+}
+
+int pp_allow_other_vhca_access(struct pp_context *pp)
+{
+	for (int i = 0; i < PP_MAX_WR; i++) {
+		uint8_t access_key[32];
+		for (int i = 0; i < 32; i++) {
+			access_key[i] = 'a' + i;
+		}
+		int ret = allow_other_vhca_access(pp->ibctx,
+						access_key,
+						32,
+						pp->mkey[i]);
+		if (ret != true) {
+			ERR("failed to set other vhca access %d\n", i);
+			return 1;
+		}
+
+	}
+
+	return 0;
+}
+
+
+int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint32_t modify_mkey_cqn) {
+	// Set the mkey to be accesseable by alias mkey
+	uint8_t access_key[32];
+	for (int i = 0; i < 32; i++) {
+		access_key[i] = 'a' + i;
+	}
+
+	for (int i = 0; i < PP_MAX_WR; i++) {
+		if (pp->alias_mkey_obj[i]) {
+			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[i]);
+			pp->alias_mkey_obj[i] = NULL;
+		}
+
+		uint32_t alias_mkey;
+		struct mlx5dv_devx_obj *obj = create_alias_mkey_obj(pp->ibctx,
+					target_pp->vhca_id,
+					target_pp->mkey[i],
+					access_key,
+					32,
+					pp->pdn,	
+					modify_mkey_cqn,
+					&alias_mkey);
+		if (obj == NULL) {
+			return 3;
+		}
+		pp->alias_mkey_obj[i] = obj;
+		pp->alias_mkey[i] = alias_mkey;
+		pp->alias_mkey_mrbuf[i] = target_pp->mrbuf[i];
+
+		// TEMP:Use the alias mkey to cover the mr. then we do not need to change those code.
+		pp->mr[i]->lkey = pp->alias_mkey[i];
+		pp->mrbuf[i] = pp->alias_mkey_mrbuf[i];
+	}
+	return 0;
 }
 
 static int get_next_cqe(struct pp_dv_cq *dvcq,

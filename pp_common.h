@@ -25,7 +25,7 @@
 
 #define PORT_NUM 1
 
-#define PP_MAX_WR 64		/* Max outstanding send/recv wr */
+#define PP_MAX_WR 1		/* Max outstanding send/recv wr */
 
 #define PP_DATA_BUF_LEN ((1 << 20) + 63)
 
@@ -40,9 +40,17 @@ struct pp_context {
 	struct ibv_device **dev_list;
 	struct ibv_context *ibctx;
 	struct ibv_pd *pd;
+	uint32_t pdn;
+	uint16_t vhca_id;
 
 	struct ibv_mr *mr[PP_MAX_WR];
 	unsigned char *mrbuf[PP_MAX_WR];
+
+	struct mlx5dv_devx_umem *umem_obj[PP_MAX_WR];
+	struct mlx5dv_devx_obj *mkey_obj[PP_MAX_WR];
+	uint32_t mkey[PP_MAX_WR];
+	unsigned char *mkey_mrbuf[PP_MAX_WR];
+
 	struct mlx5dv_devx_obj *alias_mkey_obj[PP_MAX_WR];
 	uint32_t alias_mkey[PP_MAX_WR];
 	unsigned char *alias_mkey_mrbuf[PP_MAX_WR];

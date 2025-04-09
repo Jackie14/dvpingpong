@@ -6,6 +6,8 @@
 #define SERVER_IP "192.168.167.168"
 
 static char ibv_devname[100] = "ibp59s0f0";
+static char ibv_devname_vf0[100] = "ibp59s0f0";
+static char ibv_devname_vf1[100] = "ibp59s0f0";
 static int client_sgid_idx = 3;
 
 //#define PP_DV_OPCODE_CLIENT IBV_WR_RDMA_WRITE_WITH_IMM /* IBV_WR_SEND_WITH_IMM */
@@ -27,12 +29,14 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 	sleep(1);
 
 	for (i = 0; i < num_post; i++) {
-		mem_string(ppdv->ppc.mrbuf[i], ppdv->ppc.mrbuflen);
-		*ppdv->ppc.mrbuf[i] = i % ('z' - '0') + '0';
+		mem_string(ppdv->ppc.alias_mkey_mrbuf[0][i], ppdv->ppc.mrbuflen);
+		mem_string(ppdv->ppc.alias_mkey_mrbuf[1][i], ppdv->ppc.mrbuflen);
+		memcpy(ppdv->ppc.alias_mkey_mrbuf[0][i], "vf0__", 6); 
+		memcpy(ppdv->ppc.alias_mkey_mrbuf[1][i] ,"vf1__", 6);
 	}
 
 	for (int i = 0; i < 32; i++) {
-		INFO("start to pp_dv_post_send\n");
+		ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF0;
 		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
 				opcode, IBV_SEND_SIGNALED);
 		if (ret) {
@@ -40,9 +44,16 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 			return ret;
 		}
 
-		INFO("after pp_dv_post_send\n");
+		ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF1;
+		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
+				opcode, IBV_SEND_SIGNALED);
+		if (ret) {
+			ERR("pp_dv_post_send failed\n");
+			return ret;
+		}
+
 		num_comp = 0;
-		while (num_comp < num_post) {
+		while (num_comp < num_post * 2) {
 			ret = pp_dv_poll_cq(&ppdv->cq, 1);
 			usleep(1000 * 10);
 			if (ret == CQ_POLL_ERR) {
@@ -57,10 +68,13 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 	}
 
 	/* Reset the buffer so that we can check it the received data is expected */
-	for (i = 0; i < num_post; i++)
-		memset(ppdv->ppc.mrbuf[i], 0, ppdv->ppc.mrbuflen);
+	for (i = 0; i < num_post; i++) {
+		memset(ppdv->ppc.alias_mkey_mrbuf[0][i], 0, ppdv->ppc.mrbuflen);
+		memset(ppdv->ppc.alias_mkey_mrbuf[1][i], 0, ppdv->ppc.mrbuflen);
+	}
 
 	INFO("Send done (num_post %d), now recving reply...\n", num_post);
+	ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF0;
 	ret = pp_dv_post_recv(&ppdv->ppc, &ppdv->qp, num_post);
 	if (ret) {
 		ERR("pp_dv_post_recv failed\n");
@@ -89,6 +103,7 @@ void *polling_mkey_modify_cq(void *arg)
 	INFO("Start polling_mkey_modify_cq\n");
 	(void)arg;
 	while (true) {
+		pthread_testcancel();
 		int ret = pp_dv_poll_cq(&(ppdv.mkey_modify_cq), 1);
 		if (ret == CQ_POLL_ERR) {
 			ERR("polling_mkey_modify_cq failed %d\n", ret);
@@ -96,14 +111,20 @@ void *polling_mkey_modify_cq(void *arg)
 		}
 
 		if (ret > 0) {
-			INFO("polling_mkey_modify_cq got Mkey Modify CQE\n");
-			INFO("start to rebuild mkey and alias mkey\n");
-			
-			//usleep(1000 * 1000 * 2);
-			//ret = pp_ctx_init(&ppdv.ppc2, "mlx5_7", 0, NULL, true);
-			//pp_allow_other_vhca_access(&ppdv.ppc2);
-			pp_init_mkey(&ppdv.ppc2);
-			pp_init_alias_mkey(&ppdv.ppc, &ppdv.ppc2, ppdv.mkey_modify_cq.cqn);
+			// Find out whose(vf0 or vf1) mkey was failed.
+			usleep(1000 * 100);
+			int vf_idx = 0;
+			if (ppdv.mkey_modify_cq.last_access_fail_mkey == ppdv.ppc.alias_mkey[0][0])
+				vf_idx = 0;
+			else if (ppdv.mkey_modify_cq.last_access_fail_mkey == ppdv.ppc.alias_mkey[1][0])
+				vf_idx = 1;
+			INFO("Got Mkey Modify CQE for vf%d\n", vf_idx);
+
+			INFO("Start to recreate mkey of vf%d\n", vf_idx);
+			pp_init_mkey(&ppdv.ppc_vf[vf_idx]);
+
+			INFO("Start to recreate alias mkey point to mkey of vf%d\n", vf_idx);
+			pp_init_alias_mkey(&ppdv.ppc, &ppdv.ppc_vf[vf_idx], ppdv.mkey_modify_cq.cqn, vf_idx);
 		}
 		usleep(1000 * 10);
 	}
@@ -114,12 +135,11 @@ void sig_handler(int sig) {
     switch(sig)
     {
         case SIGUSR1:
-	    pp_destroy_mkey(&(ppdv.ppc2));
+	    pp_destroy_mkey(&(ppdv.ppc_vf[0]));
             break;
-
         case SIGUSR2:
+	    pp_destroy_mkey(&(ppdv.ppc_vf[1]));
             break;
-
         default :
             break;
     }
@@ -131,82 +151,71 @@ int main(int argc, char *argv[])
     	signal(SIGUSR2, sig_handler);
 
 	int ret;
-
 	if (argv[1]) {
 		memset(ibv_devname, 0, sizeof(ibv_devname));
 		strcpy(ibv_devname, argv[1]);
 	}
 
-	ret = pp_ctx_init(&ppdv.ppc, ibv_devname, 0, NULL, true);
-	if (ret)
-		return ret;
-
-	ret = pp_ctx_init(&ppdv.ppc2, "mlx5_7", 0, NULL, true);
-	if (ret)
-		return ret;
-
-	// Set the mkey to be accesseable by alias mkey
-	uint8_t access_key[32];
-	for (int i = 0; i < 32; i++) {
-		access_key[i] = 'a' + i;
+	if (argv[2]) {
+		memset(ibv_devname_vf0, 0, sizeof(ibv_devname_vf0));
+		strcpy(ibv_devname_vf0, argv[2]);
 	}
-	for (int i = 0; i < PP_MAX_WR; i++) {
-		uint32_t mkey = ppdv.ppc2.mkey[i];
-		INFO("%d mkey %#x\n", i, mkey);
-		ret = allow_other_vhca_access(ppdv.ppc2.ibctx,
-					access_key,
-					32,
-					mkey);
-		if (ret != true) {
-			ERR("failed to set other vhca access %d\n", i);
-			return 2;
-		}
+
+	if (argv[3]) {
+		memset(ibv_devname_vf1, 0, sizeof(ibv_devname_vf1));
+		strcpy(ibv_devname_vf1, argv[3]);
 	}
+
+	ppdv.ppc.mem_region_type = MEM_REGION_TYPE_NONE;
+	ret = pp_ctx_init(&ppdv.ppc, ibv_devname, 0, NULL);
+	if (ret)
+		goto out_init_ctx;
+
+	ppdv.ppc_vf[0].mem_region_type = MEM_REGION_TYPE_DEVX;
+	ret = pp_ctx_init(&ppdv.ppc_vf[0], ibv_devname_vf0, 0, NULL);
+	if (ret)
+		goto out_init_ctx_vf0;
+
+	ppdv.ppc_vf[1].mem_region_type = MEM_REGION_TYPE_DEVX;
+	ret = pp_ctx_init(&ppdv.ppc_vf[1], ibv_devname_vf1, 0, NULL);
+	if (ret)
+		goto out_init_ctx_vf1;
+
+	ret = pp_allow_other_vhca_access(&ppdv.ppc_vf[0]);
+	if (ret)
+		goto out_allow_other_vhca_access;
+
+	ret = pp_allow_other_vhca_access(&ppdv.ppc_vf[1]);
+	if (ret)
+		goto out_allow_other_vhca_access;
 
 	ret = pp_create_cq_dv(&ppdv.ppc, &ppdv.mkey_modify_cq);
-	if (ret) {
-		ERR("failed to pp_create_cq_dv mkey_modify_cq\n");
-		return 3;
-	}
+	if (ret)
+		goto out_allow_other_vhca_access;
 
     	pthread_t thread;
-    	if (pthread_create(&thread, NULL, polling_mkey_modify_cq, 0) != 0) {
-        	ERR("Failed to create thread");
-        	return 1;
-    	}
+    	ret = pthread_create(&thread, NULL, polling_mkey_modify_cq, 0);
+	if (ret)
+		goto out_create_pthread;
     	pthread_detach(thread);
 
-	for (int i = 0; i < PP_MAX_WR; i++) {
-		uint32_t mkey = ppdv.ppc2.mkey[i];
-		uint32_t alias_mkey;
-		struct mlx5dv_devx_obj *obj = create_alias_mkey_obj(ppdv.ppc.ibctx,
-					ppdv.ppc2.vhca_id,
-					mkey,
-					access_key,
-					32,
-					ppdv.ppc.pdn,	
-					ppdv.mkey_modify_cq.cqn,
-					&alias_mkey);
-		if (obj == NULL) {
-			return 3;
-		}
-		ppdv.ppc.alias_mkey_obj[i] = obj;
-		ppdv.ppc.alias_mkey[i] = alias_mkey;
-		ppdv.ppc.alias_mkey_mrbuf[i] = ppdv.ppc2.mrbuf[i];
+	ret = pp_init_alias_mkey(&ppdv.ppc, &ppdv.ppc_vf[0], ppdv.mkey_modify_cq.cqn, 0);
+	if (ret)
+		goto out_init_alias_mkey;
 
-		// TEMP:Use the alias mkey to cover the mr. then we do not need to change those code.
-		ppdv.ppc.mr[i]->lkey = alias_mkey;
-		ppdv.ppc.mrbuf[i] = ppdv.ppc.alias_mkey_mrbuf[i];
-	}
+	ret = pp_init_alias_mkey(&ppdv.ppc, &ppdv.ppc_vf[1], ppdv.mkey_modify_cq.cqn, 1);
+	if (ret)
+		goto out_init_alias_mkey;
 
 	ret = pp_create_cq_dv(&ppdv.ppc, &ppdv.cq);
 	if (ret)
-		goto out_create_cq;
+		goto out_init_alias_mkey;
 
 	ret = pp_create_qp_dv(&ppdv.ppc, &ppdv.cq, &ppdv.qp);
 	if (ret)
 		goto out_create_qp;
 
+	ppdv.ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF0;
 	ret = pp_exchange_info(&ppdv.ppc, client_sgid_idx, ppdv.qp.qpn,
 			       CLIENT_PSN, &server, SERVER_IP);
 	if (ret)
@@ -223,7 +232,17 @@ out_exchange:
 	pp_destroy_qp_dv(&ppdv.qp);
 out_create_qp:
 	pp_destroy_cq_dv(&ppdv.cq);
-out_create_cq:
+out_init_alias_mkey:
+	pthread_cancel(thread);
+	usleep(1000 * 1000);
+out_create_pthread:
+	pp_destroy_cq_dv(&ppdv.mkey_modify_cq);
+out_allow_other_vhca_access:
+	pp_ctx_cleanup(&ppdv.ppc_vf[1]);
+out_init_ctx_vf1:
+	pp_ctx_cleanup(&ppdv.ppc_vf[0]);
+out_init_ctx_vf0:
 	pp_ctx_cleanup(&ppdv.ppc);
+out_init_ctx:
 	return ret;
 }

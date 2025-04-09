@@ -43,17 +43,22 @@ struct pp_context {
 	uint32_t pdn;
 	uint16_t vhca_id;
 
+	int mem_region_type;
+
+	// mkey created by ibv_reg_mr
 	struct ibv_mr *mr[PP_MAX_WR];
 	unsigned char *mrbuf[PP_MAX_WR];
 
+	// mkey created by devx
 	struct mlx5dv_devx_umem *umem_obj[PP_MAX_WR];
 	struct mlx5dv_devx_obj *mkey_obj[PP_MAX_WR];
 	uint32_t mkey[PP_MAX_WR];
 	unsigned char *mkey_mrbuf[PP_MAX_WR];
 
-	struct mlx5dv_devx_obj *alias_mkey_obj[PP_MAX_WR];
-	uint32_t alias_mkey[PP_MAX_WR];
-	unsigned char *alias_mkey_mrbuf[PP_MAX_WR];
+	// aliax Mkey created for vf0 and vf1
+	struct mlx5dv_devx_obj *alias_mkey_obj[2][PP_MAX_WR];
+	uint32_t alias_mkey[2][PP_MAX_WR];
+	unsigned char *alias_mkey_mrbuf[2][PP_MAX_WR];
 
 	ssize_t mrbuflen;
 };
@@ -70,8 +75,13 @@ struct pp_exchange_info {
 	uint32_t mrkey[PP_MAX_WR];
 };
 
+#define MEM_REGION_TYPE_MR        0
+#define MEM_REGION_TYPE_DEVX      1
+#define MEM_REGION_TYPE_ALIAS_VF0 2
+#define MEM_REGION_TYPE_ALIAS_VF1 3
+#define MEM_REGION_TYPE_NONE      4
 int pp_ctx_init(struct pp_context *pp, const char *ibv_devname,
-		int use_vfio, const char *vfio_pci_name, bool use_devx);
+		int use_vfio, const char *vfio_pci_name);
 void pp_ctx_cleanup(struct pp_context *pp);
 
 int pp_exchange_info(struct pp_context *ppc, int my_sgid_idx,

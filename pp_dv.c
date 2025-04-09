@@ -676,6 +676,18 @@ static void post_send_db(struct pp_dv_qp *dvqp, int size, void *ctrl)
 	mmio_write64_be((uint8_t *)dvqp->uar->reg_addr, *(__be64 *)ctrl);
 }
 
+static void set_src_data(void *seg, int id, const struct pp_context *ppc)
+{
+	if (ppc->mem_region_type == MEM_REGION_TYPE_MR)
+		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->mr[id]->lkey, (uint64_t)ppc->mrbuf[id]);
+	else if (ppc->mem_region_type == MEM_REGION_TYPE_DEVX)
+		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->mkey[id], (uint64_t)ppc->mkey_mrbuf[id]);
+	else if (ppc->mem_region_type == MEM_REGION_TYPE_ALIAS_VF0)
+		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->alias_mkey[0][id], (uint64_t)ppc->alias_mkey_mrbuf[0][id]);
+	else if (ppc->mem_region_type == MEM_REGION_TYPE_ALIAS_VF1)
+		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->alias_mkey[1][id], (uint64_t)ppc->alias_mkey_mrbuf[1][id]);
+}
+
 static void post_send_one(const struct pp_context *ppc, struct pp_dv_qp *dvqp,
 			  struct pp_exchange_info *peer, int id,
 			  int opcode, uint32_t send_flags)
@@ -708,7 +720,7 @@ static void post_send_one(const struct pp_context *ppc, struct pp_dv_qp *dvqp,
 
 	if (unlikely(seg == qend))
 		seg = dvqp->sq_start;
-	mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->mr[id]->lkey, (uint64_t)ppc->mrbuf[id]);
+	set_src_data(seg, id, ppc);
 	size += sizeof(struct mlx5_wqe_data_seg) / 16;
 
 	ctrl->opmod_idx_opcode =
@@ -756,25 +768,12 @@ static void *get_sw_cqe(struct pp_dv_cq *dvcq, int n)
 	cqe64 = (dvcq->cqe_sz == 64) ? cqe : cqe + 64;
 
 	DVDBG2("cqbuf %p n %d cqe_sz %d ncqe %d cqe64 %p owner 0x%x, opcde 0x%x final %d\n",
-	//DVDBG("cqbuf %p n %d cqe_sz %d ncqe %d cqe64 %p owner 0x%x, opcde 0x%x final %d\n",
 	       dvcq->buf, n, dvcq->cqe_sz, dvcq->ncqe, cqe64,
 	       mlx5dv_get_cqe_owner(cqe64), mlx5dv_get_cqe_opcode(cqe64),
 	       !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe)));
 
 	if (likely(mlx5dv_get_cqe_opcode(cqe64) != MLX5_CQE_INVALID) &&
 	    !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe))) {
-	    //                                                 1 0000 0000
-	    //						if n < 256  & ==> 0
-	    // 		1^0 ==>1  --不OK
-	    //          0^0 ==>0  --OK
-	    //                                          if n >= 256 & ==> 1
-	    //          1^1 ==>0  --OK
-	    //          0^1 ==>1  --不OK
-	    //						if n 
-	    DVDBG("cqbuf %p n %d cqe_sz %d ncqe %d cqe64 %p owner 0x%x, opcde 0x%x final %d\n",
-	       dvcq->buf, n, dvcq->cqe_sz, dvcq->ncqe, cqe64,
-	       mlx5dv_get_cqe_owner(cqe64), mlx5dv_get_cqe_opcode(cqe64),
-	       !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe)));
 		return cqe64;
 	    }
 	else
@@ -854,7 +853,7 @@ static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 		   0x12: Remote_Invalid_Request_Error
 		   0x13: Remote_Access_Error
 		   0x14: Remote_Operation_Error
-		   0x15: Transport_Retry_Counter_Exceeded.      ??? Why this error
+		   0x15: Transport_Retry_Counter_Exceeded.
 		   0x16: RNR_Retry_Counter_Exceeded
 		   0x22: Aborted_Error
 		   other is Reserved
@@ -863,16 +862,29 @@ static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 		   refer to the Software Transport Interface and Software
 		   Transport Verbs chapters of the IB specification.
 		*/
-		//dvcq->qp->sq.tail = dvcq->qp->sq.wqe_head[idx] + 1;
 	} else if (opcode == MLX5_CQE_RESP_ERR) {
 		DVDBG("Error MLX5_CQE_RESP_ERR\n");
-		//++dvcq->qp->sq.tail;
 	} else if (opcode == 0xb) {
-		//idx = wqe_ctr & (dvcq->dvqp->sq.wqe_cnt - 1);
-		//dvcq->qp->sq.tail = dvcq->qp->sq.wqe_head[idx] + 1;
 		struct sw_cqe_mkey_err_t *mkey_err = (struct sw_cqe_mkey_err_t *)cqe64;
-		DVDBG("MLX5_CQE_MODIFY_MKEY, fail_type: %#x\n", mkey_err->access_fail_type);
+		DVDBG("MLX5_CQE_MODIFY_MKEY\n");
+		DVDBG("%-30s: %#x\n", "cqe_subtype", mkey_err->cqe_subtype);
+		DVDBG("%-30s: %#x\n", "mkey_modification_type", mkey_err->mkey_modification_type);
+		DVDBG("%-30s: %#x\n","access_fail_type", mkey_err->access_fail_type);
+		DVDBG("%-30s: %#x\n", "access_fail_srqn_rmpn_xrqn", be32toh(mkey_err->access_fail_srqn_rmpn_xrqn));
+		DVDBG("%-30s: %#x\n", "access_fail_mkey", be32toh(mkey_err->access_fail_mkey));
+		DVDBG("%-30s: %#x\n", "send_wqe_opcode", mkey_err->send_wqe_opcode);
+		DVDBG("%-30s: %#x\n", "access_fail_qpn", be32toh(mkey_err->access_fail_qpn));
+		DVDBG("%-30s: %#x\n", "vendor_error_syndrome", mkey_err->cqe_error_syndrome.vendor_error_syndrome);
+		DVDBG("%-30s: %#x\n", "syndrome", mkey_err->cqe_error_syndrome.syndrome);
+		DVDBG("%-30s: %#x\n", "wqe_counter", be32toh(mkey_err->wqe_counter));
+		DVDBG("%-30s: %#x\n", "opcode", mkey_err->opcode);
+		dvcq->last_access_fail_mkey = be32toh(mkey_err->access_fail_mkey);
 
+		struct mlx5_err_cqe *cqe_err = (struct mlx5_err_cqe *)cqe64;
+		uint32_t wqe_opcode_qpn = be32toh(cqe_err->s_wqe_opcode_qpn);
+		uint8_t vendor_err_synd = cqe_err->vendor_err_synd;
+		uint8_t syndrome  = cqe_err->syndrome;
+		DVDBG("MLX5_CQE_MODIFY_MKEY, wqe_opcode_qpn: %x, syndrome: %x, vendor_err_synd: %x\n", wqe_opcode_qpn, syndrome, vendor_err_synd);
 		return CQ_OK;
 	} else {
 		return CQ_OK;
@@ -883,93 +895,16 @@ static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 //#endif
 	return CQ_OK;
 }
-#if 0
-int pp_init_mkey(struct pp_context *pp)
-{
-	int ret = 0;
-	int i;
-	pp->mrbuflen = PP_DATA_BUF_LEN;
-	for (i = 0; i < PP_MAX_WR; i++) {
-		pp->mrbuf[i] = memalign(sysconf(_SC_PAGESIZE), pp->mrbuflen);
-		if (!pp->mrbuf[i]) {
-			ERR("%d: memalign(0x%lx) failed\n", i, pp->mrbuflen);
-			ret = errno;
-			goto fail_memalign;
-		}
-
-		pp->umem_obj[i] = mlx5dv_devx_umem_reg(pp->ibctx, pp->mrbuf[i], pp->mrbuflen,
-						       IBV_ACCESS_LOCAL_WRITE |
-						       IBV_ACCESS_REMOTE_READ |
-						       IBV_ACCESS_REMOTE_WRITE);
-		if (pp->umem_obj[i]) {
-			ERR("umem reg failed port %zu", pp->mrbuflen);
-			goto fail_umem;
-		}
-
-		uint32_t mkey = 0;
-		struct mlx5dv_devx_obj *obj;
-		obj = buf_mkey_obj_create(pp->ibctx, get_pdn(pp->pd), pp->umem_obj[i]->umem_id,
-					 pp->mrbuf[i], pp->mrbuflen, &mkey);
-		if (!obj) {
-			ERR("mkey create failed");
-			goto fail_mkey_create;
-		}
-
-		pp->alias_mkey_obj[i] = obj;
-		pp->alias_mkey[i] = mkey;
-		pp->alias_mkey_mrbuf[i] = pp->mrbuf[i];
-	
-		INFO("%d devx mkey %#x\n", i, pp->alias_mkey[i]);
-	}
-
-	return 0;
-
-fail_mkey_create:
-	for (i = 0; i < PP_MAX_WR; i++)
-		if (pp->alias_mkey_obj[i])
-			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[i]);
-fail_umem:
-	for (i = 0; i < PP_MAX_WR; i++)
-		if (pp->umem_obj[i])
-			mlx5dv_devx_umem_reg(pp->umem_obj[i]);
-fail_memalign:
-	for (i = 0; i < PP_MAX_WR; i++)
-		free(pp->mrbuf[i]);
-
-	return ret;
-}
-#endif
 
 int pp_init_mkey(struct pp_context *pp)
 {
 	int i;
 	pp->mrbuflen = PP_DATA_BUF_LEN;
 	for (i = 0; i < PP_MAX_WR; i++) {
-		#if 0
-		if (pp->umem_obj[i]) {
-			mlx5dv_devx_umem_dereg(pp->umem_obj[i]);
-			pp->umem_obj[i] = NULL;
-		}
-
-		pp->umem_obj[i] = mlx5dv_devx_umem_reg(pp->ibctx, pp->mrbuf[i], pp->mrbuflen,
-						       IBV_ACCESS_LOCAL_WRITE |
-						       IBV_ACCESS_REMOTE_READ |
-						       IBV_ACCESS_REMOTE_WRITE);
-		if (!pp->umem_obj[i]) {
-			ERR("umem reg failed port %zu", pp->mrbuflen);
-			goto fail_umem;
-		}
-
-		if (pp->mkey_obj[i]) {
-			mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
-			pp->mkey_obj[i] = NULL;
-		}
-		#endif
-
 		uint32_t mkey = 0;
 		struct mlx5dv_devx_obj *obj;
 		obj = buf_mkey_obj_create(pp->ibctx, pp->pdn, pp->umem_obj[i]->umem_id,
-					 pp->mrbuf[i], pp->mrbuflen, &mkey);
+					 pp->mkey_mrbuf[i], pp->mrbuflen, &mkey);
 		if (!obj) {
 			ERR("mkey create failed");
 			goto fail_mkey_create;
@@ -990,7 +925,6 @@ int pp_init_mkey(struct pp_context *pp)
 
 		pp->mkey_obj[i] = obj;
 		pp->mkey[i] = mkey;
-		pp->mkey_mrbuf[i] = pp->mrbuf[i];
 	
 		INFO("%d devx mkey %#x\n", i, pp->mkey[i]);
 	}
@@ -1001,12 +935,6 @@ fail_mkey_create:
 	for (i = 0; i < PP_MAX_WR; i++)
 		if (pp->mkey_obj[i])
 			mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
-#if 0
-fail_umem:
-	for (i = 0; i < PP_MAX_WR; i++)
-		if (pp->umem_obj[i])
-			mlx5dv_devx_umem_dereg(pp->umem_obj[i]);
-#endif
 	return 0;
 
 }
@@ -1023,6 +951,16 @@ void pp_destroy_mkey(struct pp_context *pp)
 	}
 }
 
+void pp_destroy_obj(struct mlx5dv_devx_obj **obj)
+{
+	for (int i = 0; i < PP_MAX_WR; i++) {
+		if (obj[i]) {
+			mlx5dv_devx_obj_destroy(obj[i]);
+			obj[i] = NULL;
+		}
+	}
+}
+
 int pp_allow_other_vhca_access(struct pp_context *pp)
 {
 	for (int i = 0; i < PP_MAX_WR; i++) {
@@ -1030,22 +968,18 @@ int pp_allow_other_vhca_access(struct pp_context *pp)
 		for (int i = 0; i < 32; i++) {
 			access_key[i] = 'a' + i;
 		}
-		int ret = allow_other_vhca_access(pp->ibctx,
-						access_key,
-						32,
-						pp->mkey[i]);
+		int ret = allow_other_vhca_access(pp->ibctx, access_key, 32, pp->mkey[i]);
 		if (ret != true) {
 			ERR("failed to set other vhca access %d\n", i);
 			return 1;
 		}
-
 	}
 
 	return 0;
 }
 
 
-int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint32_t modify_mkey_cqn) {
+int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint32_t modify_mkey_cqn, int vf_idx) {
 	// Set the mkey to be accesseable by alias mkey
 	uint8_t access_key[32];
 	for (int i = 0; i < 32; i++) {
@@ -1053,9 +987,9 @@ int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint
 	}
 
 	for (int i = 0; i < PP_MAX_WR; i++) {
-		if (pp->alias_mkey_obj[i]) {
-			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[i]);
-			pp->alias_mkey_obj[i] = NULL;
+		if (pp->alias_mkey_obj[vf_idx][i]) {
+			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[vf_idx][i]);
+			pp->alias_mkey_obj[vf_idx][i] = NULL;
 		}
 
 		uint32_t alias_mkey;
@@ -1070,13 +1004,9 @@ int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint
 		if (obj == NULL) {
 			return 3;
 		}
-		pp->alias_mkey_obj[i] = obj;
-		pp->alias_mkey[i] = alias_mkey;
-		pp->alias_mkey_mrbuf[i] = target_pp->mrbuf[i];
-
-		// TEMP:Use the alias mkey to cover the mr. then we do not need to change those code.
-		pp->mr[i]->lkey = pp->alias_mkey[i];
-		pp->mrbuf[i] = pp->alias_mkey_mrbuf[i];
+		pp->alias_mkey_obj[vf_idx][i] = obj;
+		pp->alias_mkey[vf_idx][i] = alias_mkey;
+		pp->alias_mkey_mrbuf[vf_idx][i] = target_pp->mkey_mrbuf[i];
 	}
 	return 0;
 }
@@ -1139,8 +1069,9 @@ int pp_dv_post_recv(const struct pp_context *ppc, struct pp_dv_qp *dvqp,
 		//seg = get_wq_recv_wqe(dvqp, ind);
 		seg = dvqp->buf + dvqp->rq.offset + (ind << dvqp->rq.wqe_shift);
 		/* Signature is not supported */
-		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->mr[nreq]->lkey,
-				    (uint64_t)ppc->mrbuf[nreq]);
+		set_src_data(seg, nreq, ppc);
+		//mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->mr[nreq]->lkey,
+		//		    (uint64_t)ppc->mrbuf[nreq]);
 		ind = (ind + 1) & (dvqp->rq.wqe_cnt - 1);
 	}
 

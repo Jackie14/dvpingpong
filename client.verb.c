@@ -72,7 +72,7 @@ int main(int argc, char *argv[])
 	}
 	INFO("IB device %s, server ip %s\n", ibv_devname, SERVER_IP);
 
-	ret = pp_ctx_init(&ppv_ctx.ppc, ibv_devname, 0, NULL, false);
+	ret = pp_ctx_init(&ppv_ctx.ppc, ibv_devname, 0, NULL);
 	if (ret)
 		return ret;
 

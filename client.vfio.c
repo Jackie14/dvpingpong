@@ -220,7 +220,7 @@ int main(int argc, char *argv[])
 	parse_arg(argc, argv);
 	INFO("VFIO pci device: %s\n", vfio_pci_name);
 
-	ret = pp_ctx_init(&ppvfio.ppc, NULL, true, vfio_pci_name, false);
+	ret = pp_ctx_init(&ppvfio.ppc, NULL, true, vfio_pci_name);
 	if (ret)
 		return ret;
 

@@ -19,10 +19,10 @@ static int server_traffic_verb(struct pp_verb_ctx *ppv)
 	struct ibv_sge sglists[PP_MAX_WR] = {};
 	int max_wr_num = PP_MAX_WR, ret;
 
-	for (int i = 0; i < 32; i++) {
+	INFO("Waiting for data...\n");
+	for (int i = 0; i < 32 * 2; i++) {
 		prepare_recv_wr_verb(ppv, wrr, sglists, max_wr_num, PP_RECV_WRID_SERVER);
 
-		INFO("Waiting for data...\n");
 		/* 1. Recv "ping" */
 		ret = ibv_post_recv(ppv->cqqp.qp, wrr, &bad_wrr);
 		if (ret) {
@@ -39,6 +39,9 @@ static int server_traffic_verb(struct pp_verb_ctx *ppv)
 
 	usleep(1000 * 1000 * 3);
 	INFO("Now sending reply (%d)...\n", max_wr_num);
+	for (int i = 0; i < PP_MAX_WR; i++) {
+		memcpy(ppv->ppc.mrbuf[i], "sever_", 6); 
+	}
 	prepare_send_wr_verb(ppv, wrs, sglists, &client, max_wr_num,
 			     PP_SEND_WRID_SERVER, PP_VERB_OPCODE_SERVER, false);
 	ret = ibv_post_send(ppv->cqqp.qp, wrs, &bad_wrs);
@@ -67,7 +70,7 @@ int main(int argc, char *argv[])
 	}
 	INFO("IB device %s\n", ibv_devname);
 
-	ret = pp_ctx_init(&ppv_ctx.ppc, ibv_devname, 0, NULL, false);
+	ret = pp_ctx_init(&ppv_ctx.ppc, ibv_devname, 0, NULL);
 	if (ret)
 		return ret;
 

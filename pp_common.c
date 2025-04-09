@@ -173,8 +173,7 @@ static int dr_devx_query_gvmi(struct ibv_context *ctx, uint16_t *gvmi)
 	return 0;
 }
 
-int pp_ctx_init(struct pp_context *pp, const char *ibv_devname,
-		int use_vfio, const char *vfio_pci_name, bool use_devx)
+int pp_ctx_init(struct pp_context *pp, const char *ibv_devname, int use_vfio, const char *vfio_pci_name)
 {
 	struct mlx5dv_vfio_context_attr vfio_ctx_attr = {
 		.pci_name = vfio_pci_name,
@@ -239,9 +238,12 @@ int pp_ctx_init(struct pp_context *pp, const char *ibv_devname,
 	pp->vhca_id = vhca_id;
 	INFO("vhca_id: %#x\n", pp->vhca_id);
 
-
 	pp->mrbuflen = PP_DATA_BUF_LEN;
 	for (i = 0; i < PP_MAX_WR; i++) {
+		if (pp->mem_region_type == MEM_REGION_TYPE_NONE) {
+			continue;
+		}
+
 		if (!pp->mrbuf[i]) {
 			pp->mrbuf[i] = memalign(sysconf(_SC_PAGESIZE), pp->mrbuflen);
 			if (!pp->mrbuf[i]) {
@@ -251,38 +253,39 @@ int pp_ctx_init(struct pp_context *pp, const char *ibv_devname,
 			}
 		}
 
-		pp->mr[i] = ibv_reg_mr(pp->pd, pp->mrbuf[i], pp->mrbuflen,
-				       IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE);
-		if (!pp->mr[i]) {
-			ERR("%d: ibv_reg_mr() failed\n", i);
-			ret = errno;
-			goto fail_reg_mr;
-		}
+		if (pp->mem_region_type == MEM_REGION_TYPE_MR){
+			pp->mr[i] = ibv_reg_mr(pp->pd, pp->mrbuf[i], pp->mrbuflen,
+					IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE);
+			if (!pp->mr[i]) {
+				ERR("%d: ibv_reg_mr() failed\n", i);
+				ret = errno;
+				goto fail_reg_mr;
+			}
+			INFO("%d mr mkey %#x\n", i, pp->mr[i]->lkey);
+		} else if (pp->mem_region_type == MEM_REGION_TYPE_DEVX) {
+			pp->mkey_mrbuf[i] = pp->mrbuf[i];
+			pp->mrbuf[i] = NULL;
+			pp->umem_obj[i] = mlx5dv_devx_umem_reg(pp->ibctx, pp->mkey_mrbuf[i], pp->mrbuflen, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE);
+			if (!pp->umem_obj) {
+				ERR("umem reg failed port %zu", pp->mrbuflen);
+				goto fail_memalign;
+			}
 
-		if (use_devx){
-		pp->umem_obj[i] = mlx5dv_devx_umem_reg(pp->ibctx, pp->mrbuf[i], pp->mrbuflen, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE);
-		if (!pp->umem_obj) {
-			ERR("umem reg failed port %zu", pp->mrbuflen);
-			goto fail_memalign;
-		}
+			if (pp->mkey_obj[i])
+				mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
 
-		if (pp->mkey_obj[i])
-			mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
+			uint32_t mkey = 0;
+			struct mlx5dv_devx_obj *obj = buf_mkey_obj_create(pp->ibctx, pp->pdn, pp->umem_obj[i]->umem_id, pp->mkey_mrbuf[i], pp->mrbuflen, &mkey);
+			if (!obj) {
+				ERR("mkey create failed");
+				goto fail_memalign;
+			}
 
-		uint32_t mkey = 0;
-		struct mlx5dv_devx_obj *obj = buf_mkey_obj_create(pp->ibctx, pp->pdn, pp->umem_obj[i]->umem_id, pp->mrbuf[i], pp->mrbuflen, &mkey);
-		if (!obj) {
-			ERR("mkey create failed");
-			goto fail_memalign;
-		}
-
-		pp->mkey_obj[i] = obj;
-		pp->mkey[i] = mkey;
-		pp->mkey_mrbuf[i] = pp->mrbuf[i];
-	
-		INFO("%d devx mkey %#x\n", i, pp->mkey[i]);
+			pp->mkey_obj[i] = obj;
+			pp->mkey[i] = mkey;
+			INFO("%d devx mkey %#x\n", i, pp->mkey[i]);
 		} else {
-		INFO("%d mr mkey %#x\n", i, pp->mr[i]->lkey);
+			ERR("Incorrect mem region type %d\n", pp->mem_region_type);
 		}
 	}
 
@@ -312,10 +315,20 @@ void pp_ctx_cleanup(struct pp_context *pp)
 {
 	int i;
 
-	for (i = 0; i < PP_MAX_WR; i++)
-		ibv_dereg_mr(pp->mr[i]);
-	for (i = 0; i < PP_MAX_WR; i++)
-		free(pp->mrbuf[i]);
+	for (i = 0; i < PP_MAX_WR; i++) {
+		if (MEM_REGION_TYPE_MR == pp->mem_region_type) {
+			ibv_dereg_mr(pp->mr[i]);
+			free(pp->mrbuf[i]);
+		} else if (MEM_REGION_TYPE_DEVX == pp->mem_region_type) {
+			mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
+			mlx5dv_devx_umem_dereg(pp->umem_obj[i]);
+			free(pp->mkey_mrbuf[i]);
+		} else if (MEM_REGION_TYPE_ALIAS_VF0 == pp->mem_region_type ||
+			   MEM_REGION_TYPE_ALIAS_VF1 == pp->mem_region_type) {
+			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[0][i]);
+			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[1][i]);
+		}
+	}
 	ibv_dealloc_pd(pp->pd);
 	pp_close_ibvdevice(pp->ibctx);
 }
@@ -333,6 +346,23 @@ static void print_gid(struct pp_context *ppc, unsigned char *p)
 extern int sock_client(const char *server_ip, char *sendbuf, int send_buflen,
 		       char *recvbuf, int recv_buflen);
 extern int sock_server(char *sendbuf, int send_buflen, char *recvbuf, int recv_buflen);
+
+void get_mkey_buf(struct pp_context *ppc, int i, uint32_t *mkey, unsigned char **buf)
+{
+	if (ppc->mem_region_type == MEM_REGION_TYPE_MR) {
+		*mkey = ppc->mr[i]->lkey;
+		*buf = ppc->mrbuf[i];
+	} else if (ppc->mem_region_type == MEM_REGION_TYPE_DEVX) {
+		*mkey = ppc->mkey[i];
+		*buf = ppc->mkey_mrbuf[i];
+	} else if (ppc->mem_region_type == MEM_REGION_TYPE_ALIAS_VF0) {
+		*mkey = ppc->alias_mkey[0][i];
+		*buf = ppc->alias_mkey_mrbuf[0][i];
+	} else if (ppc->mem_region_type == MEM_REGION_TYPE_ALIAS_VF1) {
+		*mkey = ppc->alias_mkey[1][i];
+		*buf = ppc->alias_mkey_mrbuf[1][i];
+	}
+}
 
 /* %sip NULL means local is server, otherwise local is client */
 int pp_exchange_info(struct pp_context *ppc, int my_sgid_idx,
@@ -363,14 +393,18 @@ int pp_exchange_info(struct pp_context *ppc, int my_sgid_idx,
 
 	local->qpn = htobe32(my_qp_num);
 	local->psn = htobe32(my_psn);
+
+	uint32_t  mkey = 0;
+	unsigned char *buf = NULL;
 	for (i = 0; i < PP_MAX_WR; i++) {
-		local->addr[i] = (void *)htobe64((uint64_t)ppc->mrbuf[i]);
-		local->mrkey[i] = htobe32(ppc->mr[i]->lkey);
+		get_mkey_buf(ppc, i, &mkey, &buf);
+		local->addr[i] = (void *)htobe64((uint64_t)buf);
+		local->mrkey[i] = htobe32(mkey);
 	}
 	p = local->gid.raw;
 	INFO("Local(%s): port_num %d, lid %d, psn 0x%x, qpn 0x%x(%d), addr %p, mrkey 0x%x\n",
 	     sip ? "Client" : "Server", ppc->port_num, ppc->port_attr.lid, my_psn,
-	     my_qp_num, my_qp_num, ppc->mrbuf[PP_MAX_WR - 1], ppc->mr[PP_MAX_WR - 1]->lkey);
+	     my_qp_num, my_qp_num, buf, mkey);
 	print_gid(ppc, p);
 
 	if (sip)
@@ -405,12 +439,16 @@ int pp_exchange_info(struct pp_context *ppc, int my_sgid_idx,
 /* To dump a long string like this: "0: 0BCDEFGHIJKLMNOP ... nopqrstuvwxyABC" */
 void dump_msg_short(int index, struct pp_context *ppc)
 {
-	ppc->mrbuf[index][ppc->mrbuflen - 1] = '\0';
+	uint32_t mkey;
+	unsigned char *buf;
+	get_mkey_buf(ppc, index, &mkey, &buf);
+
+	buf[ppc->mrbuflen - 1] = '\0';
 	if (ppc->mrbuflen <= 32) {
-		printf("    %2d: %s\n", index, ppc->mrbuf[index]);
+		printf("    %2d: %s\n", index, buf);
 	} else {
-		ppc->mrbuf[index][16] = '\0';
+		buf[16] = '\0';
 		printf("    %2d (len = 0x%lx): %s...%s\n", index, ppc->mrbuflen,
-		       ppc->mrbuf[index], ppc->mrbuf[index] + ppc->mrbuflen - 16);
+		       buf, buf + ppc->mrbuflen - 16);
 	}
 }

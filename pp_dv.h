@@ -54,11 +54,13 @@ struct pp_dv_cq {
 	uint32_t cons_index;
 	uint32_t cqe_sz;
 	uint32_t ncqe;
+
+	uint32_t last_access_fail_mkey;
 };
 
 struct pp_dv_ctx {
 	struct pp_context ppc;
-	struct pp_context ppc2;
+	struct pp_context ppc_vf[2];
 	struct pp_dv_cq cq;
 	struct pp_dv_cq mkey_modify_cq;
 	struct pp_dv_qp qp;
@@ -80,6 +82,7 @@ int pp_dv_post_send(const struct pp_context *ppc, struct pp_dv_qp *dvqp,
 
 void *pp_dv_get_cqe(struct pp_dv_cq *dvcq, int n);
 int pp_dv_poll_cq(struct pp_dv_cq *dvcq, uint32_t ne);
+
 int pp_dv_post_recv(const struct pp_context *ppc, struct pp_dv_qp *dvqp,
 		    unsigned int num_post);
 bool allow_other_vhca_access(struct ibv_context *ibctx,
@@ -99,6 +102,7 @@ int dr_devx_query_gvmi(struct ibv_context *ctx, uint16_t *gvmi);
 uint32_t get_pdn(struct ibv_pd *pd);
 
 int pp_init_mkey(struct pp_context *pp);
-int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint32_t modify_mkey_cqn);
+int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint32_t modify_mkey_cqn, int vf_idx);
 int pp_allow_other_vhca_access(struct pp_context *pp);
 void pp_destroy_mkey(struct pp_context *pp);
+void pp_destroy_obj(struct mlx5dv_devx_obj **obj);

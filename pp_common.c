@@ -213,12 +213,6 @@ int pp_ctx_init(struct pp_context *pp, const char *ibv_devname, int use_vfio, co
 			return ret;
 	}
 
-	if (pp->pd) {
-		INFO("pdn before free: %#x\n", pp->pdn);
-		ibv_dealloc_pd(pp->pd);
-		pp->pd = NULL;
-		pp->pdn = 0;
-	}
 	pp->pd = ibv_alloc_pd(pp->ibctx);
 	if (!pp->pd) {
 		ERR("ibv_alloc_pd() failed\n");
@@ -244,13 +238,11 @@ int pp_ctx_init(struct pp_context *pp, const char *ibv_devname, int use_vfio, co
 			continue;
 		}
 
+		pp->mrbuf[i] = memalign(sysconf(_SC_PAGESIZE), pp->mrbuflen);
 		if (!pp->mrbuf[i]) {
-			pp->mrbuf[i] = memalign(sysconf(_SC_PAGESIZE), pp->mrbuflen);
-			if (!pp->mrbuf[i]) {
-				ERR("%d: memalign(0x%lx) failed\n", i, pp->mrbuflen);
-				ret = errno;
-				goto fail_memalign;
-			}
+			ERR("%d: memalign(0x%lx) failed\n", i, pp->mrbuflen);
+			ret = errno;
+			goto fail_memalign;
 		}
 
 		if (pp->mem_region_type == MEM_REGION_TYPE_MR){
@@ -270,9 +262,6 @@ int pp_ctx_init(struct pp_context *pp, const char *ibv_devname, int use_vfio, co
 				ERR("umem reg failed port %zu", pp->mrbuflen);
 				goto fail_memalign;
 			}
-
-			if (pp->mkey_obj[i])
-				mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
 
 			uint32_t mkey = 0;
 			struct mlx5dv_devx_obj *obj = buf_mkey_obj_create(pp->ibctx, pp->pdn, pp->umem_obj[i]->umem_id, pp->mkey_mrbuf[i], pp->mrbuflen, &mkey);
@@ -319,18 +308,32 @@ void pp_ctx_cleanup(struct pp_context *pp)
 		if (MEM_REGION_TYPE_MR == pp->mem_region_type) {
 			ibv_dereg_mr(pp->mr[i]);
 			free(pp->mrbuf[i]);
+			pp->mr[i] = NULL;
+			pp->mrbuf[i] = NULL;
 		} else if (MEM_REGION_TYPE_DEVX == pp->mem_region_type) {
 			mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
 			mlx5dv_devx_umem_dereg(pp->umem_obj[i]);
 			free(pp->mkey_mrbuf[i]);
+			pp->mkey_obj[i] = NULL;
+			pp->mkey[i] = 0;
+			pp->umem_obj[i] = NULL;
+			pp->mkey_mrbuf[i] = NULL;
 		} else if (MEM_REGION_TYPE_ALIAS_VF0 == pp->mem_region_type ||
 			   MEM_REGION_TYPE_ALIAS_VF1 == pp->mem_region_type) {
 			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[0][i]);
 			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[1][i]);
+			pp->alias_mkey_obj[0][i] = NULL;
+			pp->alias_mkey[0][i] = 0;
+			pp->alias_mkey_mrbuf[0][i] = NULL;
+			pp->alias_mkey_obj[1][i] = NULL;
+			pp->alias_mkey[1][i] = 0;
+			pp->alias_mkey_mrbuf[1][i] = NULL;
 		}
 	}
 	ibv_dealloc_pd(pp->pd);
+	pp->pd = NULL;
 	pp_close_ibvdevice(pp->ibctx);
+	pp->ibctx = NULL;
 }
 
 static void print_gid(struct pp_context *ppc, unsigned char *p)

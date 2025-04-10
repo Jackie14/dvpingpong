@@ -7,7 +7,6 @@
 
 static char ibv_devname[100] = "ibp59s0f0";
 static char ibv_devname_vf[2][100];
-static char ibv_devname_vf1[100] = "ibp59s0f0";
 static int client_sgid_idx = 3;
 
 //#define PP_DV_OPCODE_CLIENT IBV_WR_RDMA_WRITE_WITH_IMM /* IBV_WR_SEND_WITH_IMM */
@@ -35,7 +34,7 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 		memcpy(ppdv->ppc.alias_mkey_mrbuf[1][i] ,"vf1__", 6);
 	}
 
-	for (int i = 0; i < 32; i++) {
+	for (int i = 0; i < 100; i++) {
 		ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF0;
 		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
 				opcode, IBV_SEND_SIGNALED);
@@ -63,8 +62,8 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 			if (ret > 0)
 				num_comp++;
 		}
-		if (i < 32)
-			usleep(1000 * 1000 * 1);
+		if (i < 100)
+			usleep(1000 * 100);
 	}
 
 	/* Reset the buffer so that we can check it the received data is expected */
@@ -123,8 +122,15 @@ void *polling_mkey_modify_cq(void *arg)
 			if (true) {
 				INFO("Start to vf context and mkey of vf%d\n", vf_idx);
 				pp_ctx_cleanup(&ppdv.ppc_vf[vf_idx]);
+				usleep(1000 * 1000 * 2);
 				pp_ctx_init(&ppdv.ppc_vf[vf_idx], ibv_devname_vf[vf_idx], 0, NULL);
 				pp_allow_other_vhca_access(&ppdv.ppc_vf[vf_idx]);
+
+				// Init the mkey buf before assign it to alias mkey
+				for (int i = 0; i < PP_MAX_WR; i++) {
+					mem_string(ppdv.ppc_vf[vf_idx].mkey_mrbuf[i], ppdv.ppc.mrbuflen);
+					memcpy(ppdv.ppc_vf[vf_idx].mkey_mrbuf[i], vf_idx == 0 ? "vf0__" : "vf1__", 6); 
+				}
 			} else {
 				// Following is for "destroy mkey case", we only need to recreate mkey
 				INFO("Start to recreate mkey of vf%d\n", vf_idx);
@@ -170,8 +176,8 @@ int main(int argc, char *argv[])
 	}
 
 	if (argv[3]) {
-		memset(ibv_devname_vf[0], 0, sizeof(ibv_devname_vf[0]));
-		strcpy(ibv_devname_vf[0], argv[3]);
+		memset(ibv_devname_vf[1], 0, sizeof(ibv_devname_vf[1]));
+		strcpy(ibv_devname_vf[1], argv[3]);
 	}
 
 	ppdv.ppc.mem_region_type = MEM_REGION_TYPE_NONE;

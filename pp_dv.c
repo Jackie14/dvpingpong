@@ -556,7 +556,7 @@ static int dvqp_rst2init(const struct pp_context *ppc, struct pp_dv_qp *dvqp)
 
 /* FIXME: For RoCE currently dmac is hard-coded */
 //static uint8_t dmac[6] = {0x02, 0x72, 0x18, 0xd5, 0x8d, 0x9b};
-static uint8_t dmac[6] = {0xa0, 0x88, 0xc2, 0x53, 0x05, 0xa8};
+static uint8_t dmac[6] = {0xa0, 0x88, 0xc2, 0x53, 0x01, 0x80};
 //static uint8_t dmac[6] = {0xec, 0x0d, 0x9a, 0x8a, 0x28, 0x2a};
 static int dvqp_init2rtr(const struct pp_context *ppc,
 			 const struct pp_exchange_info *peer,
@@ -682,10 +682,14 @@ static void set_src_data(void *seg, int id, const struct pp_context *ppc)
 		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->mr[id]->lkey, (uint64_t)ppc->mrbuf[id]);
 	else if (ppc->mem_region_type == MEM_REGION_TYPE_DEVX)
 		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->mkey[id], (uint64_t)ppc->mkey_mrbuf[id]);
-	else if (ppc->mem_region_type == MEM_REGION_TYPE_ALIAS_VF0)
+	else if (ppc->mem_region_type == MEM_REGION_TYPE_ALIAS_VF0) {
 		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->alias_mkey[0][id], (uint64_t)ppc->alias_mkey_mrbuf[0][id]);
-	else if (ppc->mem_region_type == MEM_REGION_TYPE_ALIAS_VF1)
+		INFO("Use alias mkey: %#x\n", ppc->alias_mkey[0][id]);
+	}
+	else if (ppc->mem_region_type == MEM_REGION_TYPE_ALIAS_VF1) {
 		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->alias_mkey[1][id], (uint64_t)ppc->alias_mkey_mrbuf[1][id]);
+		INFO("Use alias mkey: %#x\n", ppc->alias_mkey[1][id]);
+	}
 }
 
 static void post_send_one(const struct pp_context *ppc, struct pp_dv_qp *dvqp,
@@ -774,6 +778,10 @@ static void *get_sw_cqe(struct pp_dv_cq *dvcq, int n)
 
 	if (likely(mlx5dv_get_cqe_opcode(cqe64) != MLX5_CQE_INVALID) &&
 	    !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe))) {
+	DVDBG("cqbuf %p n %d cqe_sz %d ncqe %d cqe64 %p owner 0x%x, opcde 0x%x final %d\n",
+	       dvcq->buf, n, dvcq->cqe_sz, dvcq->ncqe, cqe64,
+	       mlx5dv_get_cqe_owner(cqe64), mlx5dv_get_cqe_opcode(cqe64),
+	       !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe)));
 		return cqe64;
 	    }
 	else
@@ -801,6 +809,9 @@ struct sw_cqe_mkey_err_t {      /* Big Endian */
         /*----------------------------------------------------------*/
         unsigned char                   reserved_at_a0[12];
         /*----------------------------------------------------------*/
+
+
+	// ----- 32
         uint32                  reserved_at_100:8;
         uint32                  access_fail_srqn_rmpn_xrqn:24;                  /* SRQ/RMP/XRC_SRQ/XRQ number that failed the memory access. */
         /*----------------------------------------------------------*/
@@ -813,11 +824,15 @@ struct sw_cqe_mkey_err_t {      /* Big Endian */
         uint32                  send_wqe_opcode:8;                      /* On requester - the send WQE opcode. */
         uint32                  access_fail_qpn:24;                     /* QP that failed the memory access. */
         /*----------------------------------------------------------*/
-        uint32                  wqe_counter:16;                 /* WQE index that failed memory access. */
-        uint32                  signature:8;
-        uint32                  opcode:4;
-        uint32                  reserved_at_1fc:3;
-        uint32                  owner:1;
+        //uint32                  wqe_counter:16;                 /* WQE index that failed memory access. */
+        //uint32                  signature:8;
+        //uint32                  opcode:4;
+        //uint32                  reserved_at_1fc:3;
+        //uint32                  owner:1;
+
+	uint16_t	wqe_counter;
+	uint8_t		signature;
+	uint8_t		op_own;
 /* --------------------------------------------------------- */
 };
 
@@ -831,13 +846,16 @@ static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 	wqe_ctr = be16toh(cqe64->wqe_counter);
 	opcode = mlx5dv_get_cqe_opcode(cqe64);
 
-	if (opcode == MLX5_CQE_REQ_ERR) {
-		idx = wqe_ctr & (dvcq->dvqp->sq.wqe_cnt - 1);
+	if (opcode == MLX5_CQE_REQ_ERR || opcode == MLX5_CQE_RESP_ERR) {
+		idx = wqe_ctr & ((opcode == MLX5_CQE_REQ_ERR ? dvcq->dvqp->sq.wqe_cnt : dvcq->dvqp->rq.wqe_cnt) - 1);
+
 		struct mlx5_err_cqe *cqe_err = (struct mlx5_err_cqe *)cqe64;
 		uint32_t wqe_opcode_qpn = be32toh(cqe_err->s_wqe_opcode_qpn);
 		uint8_t vendor_err_synd = cqe_err->vendor_err_synd;
 		uint8_t syndrome  = cqe_err->syndrome;
-		DVDBG("Error MLX5_CQE_REQ_ERR, wqe_idx: %d, wqe_opcode_qpn: %x, syndrome: %x, vendor_err_synd: %x\n", idx, wqe_opcode_qpn, syndrome, vendor_err_synd);
+		DVDBG("Error %s, wqe_idx: %d, wqe_opcode_qpn: %x, syndrome: %x, vendor_err_synd: %x\n",
+			(opcode == MLX5_CQE_REQ_ERR ? "MLX5_CQE_REQ_ERR" : "MLX5_CQE_RESP_ERR"),
+			idx, wqe_opcode_qpn, syndrome, vendor_err_synd);
 		// Error MLX5_CQE_REQ_ERR, wqe_idx: 0, wqe_opcode_qpn: b0002ab, syndrome: 15, vendor_err_synd: 81
 		// b = 0xB: Send_with_Immediate
 		// 2a8 = qpn
@@ -862,29 +880,40 @@ static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 		   refer to the Software Transport Interface and Software
 		   Transport Verbs chapters of the IB specification.
 		*/
-	} else if (opcode == MLX5_CQE_RESP_ERR) {
-		DVDBG("Error MLX5_CQE_RESP_ERR\n");
 	} else if (opcode == 0xb) {
 		struct sw_cqe_mkey_err_t *mkey_err = (struct sw_cqe_mkey_err_t *)cqe64;
 		DVDBG("MLX5_CQE_MODIFY_MKEY\n");
+		for (int i = 0; i < 16; i++) {
+			for (int j = 0; j < 4; j++) {
+				DVDBG("%02x ", *(((uint8_t *)cqe64) + (i * 4) + j));
+			}
+			DVDBG("\n");
+		}
+		DVDBG("\n");
 		DVDBG("%-30s: %#x\n", "cqe_subtype", mkey_err->cqe_subtype);
+		DVDBG("%-30s: %#x\n", "reserved_at_8", be32toh(mkey_err->reserved_at_8));
+
 		DVDBG("%-30s: %#x\n", "mkey_modification_type", mkey_err->mkey_modification_type);
 		DVDBG("%-30s: %#x\n","access_fail_type", mkey_err->access_fail_type);
 		DVDBG("%-30s: %#x\n", "access_fail_srqn_rmpn_xrqn", be32toh(mkey_err->access_fail_srqn_rmpn_xrqn));
 		DVDBG("%-30s: %#x\n", "access_fail_mkey", be32toh(mkey_err->access_fail_mkey));
 		DVDBG("%-30s: %#x\n", "send_wqe_opcode", mkey_err->send_wqe_opcode);
 		DVDBG("%-30s: %#x\n", "access_fail_qpn", be32toh(mkey_err->access_fail_qpn));
+
+		DVDBG("%-30s: %#x\n", "hw_error_syndrome", mkey_err->cqe_error_syndrome.hw_error_syndrome);
+		DVDBG("%-30s: %#x\n", "hw_syndrome_type", mkey_err->cqe_error_syndrome.hw_syndrome_type);
+		DVDBG("%-30s: %#x\n", "reserved_at_c", mkey_err->cqe_error_syndrome.reserved_at_c);
 		DVDBG("%-30s: %#x\n", "vendor_error_syndrome", mkey_err->cqe_error_syndrome.vendor_error_syndrome);
 		DVDBG("%-30s: %#x\n", "syndrome", mkey_err->cqe_error_syndrome.syndrome);
-		DVDBG("%-30s: %#x\n", "wqe_counter", be32toh(mkey_err->wqe_counter));
-		DVDBG("%-30s: %#x\n", "opcode", mkey_err->opcode);
-		dvcq->last_access_fail_mkey = be32toh(mkey_err->access_fail_mkey);
 
-		struct mlx5_err_cqe *cqe_err = (struct mlx5_err_cqe *)cqe64;
-		uint32_t wqe_opcode_qpn = be32toh(cqe_err->s_wqe_opcode_qpn);
-		uint8_t vendor_err_synd = cqe_err->vendor_err_synd;
-		uint8_t syndrome  = cqe_err->syndrome;
-		DVDBG("MLX5_CQE_MODIFY_MKEY, wqe_opcode_qpn: %x, syndrome: %x, vendor_err_synd: %x\n", wqe_opcode_qpn, syndrome, vendor_err_synd);
+		DVDBG("%-30s: %#x\n", "wqe_counter", be16toh(mkey_err->wqe_counter));
+		//DVDBG("%-30s: %#x\n", "opcode", mkey_err->opcode);
+		DVDBG("%-30s: %#x\n", "signature", mkey_err->signature);
+		DVDBG("%-30s: %#x\n", "opcode", mkey_err->op_own  >> 4);
+		//DVDBG("%-30s: %#x\n", "reserved_at_1fc", mkey_err->reserved_at_1fc);
+		//DVDBG("%-30s: %#x\n", "owner", mkey_err->owner);
+
+		dvcq->last_access_fail_mkey = be32toh(mkey_err->access_fail_mkey);
 		return CQ_OK;
 	} else {
 		return CQ_OK;
@@ -1004,6 +1033,7 @@ int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint
 		if (obj == NULL) {
 			return 3;
 		}
+		INFO("Create alias mkey: %#x\n", alias_mkey);
 		pp->alias_mkey_obj[vf_idx][i] = obj;
 		pp->alias_mkey[vf_idx][i] = alias_mkey;
 		pp->alias_mkey_mrbuf[vf_idx][i] = target_pp->mkey_mrbuf[i];

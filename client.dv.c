@@ -6,7 +6,7 @@
 #define SERVER_IP "192.168.167.168"
 
 static char ibv_devname[100] = "ibp59s0f0";
-static char ibv_devname_vf0[100] = "ibp59s0f0";
+static char ibv_devname_vf[2][100];
 static char ibv_devname_vf1[100] = "ibp59s0f0";
 static int client_sgid_idx = 3;
 
@@ -120,8 +120,16 @@ void *polling_mkey_modify_cq(void *arg)
 				vf_idx = 1;
 			INFO("Got Mkey Modify CQE for vf%d\n", vf_idx);
 
-			INFO("Start to recreate mkey of vf%d\n", vf_idx);
-			pp_init_mkey(&ppdv.ppc_vf[vf_idx]);
+			if (true) {
+				INFO("Start to vf context and mkey of vf%d\n", vf_idx);
+				pp_ctx_cleanup(&ppdv.ppc_vf[vf_idx]);
+				pp_ctx_init(&ppdv.ppc_vf[vf_idx], ibv_devname_vf[vf_idx], 0, NULL);
+				pp_allow_other_vhca_access(&ppdv.ppc_vf[vf_idx]);
+			} else {
+				// Following is for "destroy mkey case", we only need to recreate mkey
+				INFO("Start to recreate mkey of vf%d\n", vf_idx);
+				pp_init_mkey(&ppdv.ppc_vf[vf_idx]);
+			}
 
 			INFO("Start to recreate alias mkey point to mkey of vf%d\n", vf_idx);
 			pp_init_alias_mkey(&ppdv.ppc, &ppdv.ppc_vf[vf_idx], ppdv.mkey_modify_cq.cqn, vf_idx);
@@ -157,13 +165,13 @@ int main(int argc, char *argv[])
 	}
 
 	if (argv[2]) {
-		memset(ibv_devname_vf0, 0, sizeof(ibv_devname_vf0));
-		strcpy(ibv_devname_vf0, argv[2]);
+		memset(ibv_devname_vf[0], 0, sizeof(ibv_devname_vf[0]));
+		strcpy(ibv_devname_vf[0], argv[2]);
 	}
 
 	if (argv[3]) {
-		memset(ibv_devname_vf1, 0, sizeof(ibv_devname_vf1));
-		strcpy(ibv_devname_vf1, argv[3]);
+		memset(ibv_devname_vf[0], 0, sizeof(ibv_devname_vf[0]));
+		strcpy(ibv_devname_vf[0], argv[3]);
 	}
 
 	ppdv.ppc.mem_region_type = MEM_REGION_TYPE_NONE;
@@ -172,12 +180,12 @@ int main(int argc, char *argv[])
 		goto out_init_ctx;
 
 	ppdv.ppc_vf[0].mem_region_type = MEM_REGION_TYPE_DEVX;
-	ret = pp_ctx_init(&ppdv.ppc_vf[0], ibv_devname_vf0, 0, NULL);
+	ret = pp_ctx_init(&ppdv.ppc_vf[0], ibv_devname_vf[0], 0, NULL);
 	if (ret)
 		goto out_init_ctx_vf0;
 
 	ppdv.ppc_vf[1].mem_region_type = MEM_REGION_TYPE_DEVX;
-	ret = pp_ctx_init(&ppdv.ppc_vf[1], ibv_devname_vf1, 0, NULL);
+	ret = pp_ctx_init(&ppdv.ppc_vf[1], ibv_devname_vf[1], 0, NULL);
 	if (ret)
 		goto out_init_ctx_vf1;
 

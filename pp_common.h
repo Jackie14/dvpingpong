@@ -30,6 +30,7 @@
 #define PP_DATA_BUF_LEN ((1 << 20) + 63)
 
 #define PP_MAX_LOG_CQ_SIZE 8	/* 256 cqe */
+#define PP_MAX_LOG_CQ_SIZE_2 14	/* 256 cqe */
 
 struct pp_context {
 	int port_num;

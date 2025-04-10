@@ -20,7 +20,7 @@ static int server_traffic_verb(struct pp_verb_ctx *ppv)
 	int max_wr_num = PP_MAX_WR, ret;
 
 	INFO("Waiting for data...\n");
-	for (int i = 0; i < 100 * 2; i++) {
+	for (int i = 0; i < 1024 * 2; i++) {
 		prepare_recv_wr_verb(ppv, wrr, sglists, max_wr_num, PP_RECV_WRID_SERVER);
 
 		/* 1. Recv "ping" */

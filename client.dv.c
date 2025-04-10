@@ -34,7 +34,7 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 		memcpy(ppdv->ppc.alias_mkey_mrbuf[1][i] ,"vf1__", 6);
 	}
 
-	for (int i = 0; i < 100; i++) {
+	for (int i = 0; i < 1024; i++) {
 		ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF0;
 		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
 				opcode, IBV_SEND_SIGNALED);
@@ -54,7 +54,7 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 		num_comp = 0;
 		while (num_comp < num_post * 2) {
 			ret = pp_dv_poll_cq(&ppdv->cq, 1);
-			usleep(1000 * 10);
+			//usleep(1000 * 10);
 			if (ret == CQ_POLL_ERR) {
 				ERR("poll_cq(send) failed %d, %d/%d\n", ret, num_comp, num_post);
 				return ret;
@@ -62,8 +62,8 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 			if (ret > 0)
 				num_comp++;
 		}
-		if (i < 100)
-			usleep(1000 * 100);
+		//if (i < 100)
+			//usleep(1000 * 100);
 	}
 
 	/* Reset the buffer so that we can check it the received data is expected */

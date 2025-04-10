@@ -1,3 +1,4 @@
+#include <immintrin.h>
 #include "mlx5_ifc.h"
 #include "pp_dv.h"
 
@@ -193,7 +194,7 @@ int pp_create_cq_dv(const struct pp_context *ppc, struct pp_dv_cq *dvcq)
 	int i, ret;
 
 	dvcq->cqe_sz = 64;
-	dvcq->ncqe = 1 << PP_MAX_LOG_CQ_SIZE;
+	dvcq->ncqe = 1 << PP_MAX_LOG_CQ_SIZE_2;
 
 	ret = mlx5dv_devx_query_eqn(ppc->ibctx, 0, &eqn);
 	if (ret) {
@@ -243,8 +244,9 @@ int pp_create_cq_dv(const struct pp_context *ppc, struct pp_dv_cq *dvcq)
 
 	DEVX_SET64(cqc, cqc, log_page_size, 0); /* 12 - MLX5_ADAPTER_PAGE_SHIFT */
 	DEVX_SET64(cqc, cqc, page_offset, 0);
-	DEVX_SET(cqc, cqc, log_cq_size, PP_MAX_LOG_CQ_SIZE);
+	DEVX_SET(cqc, cqc, log_cq_size, PP_MAX_LOG_CQ_SIZE_2);
 	DEVX_SET(cqc, cqc, cqe_sz, 0); /* BYTES_64 */
+	DEVX_SET(cqc, cqc, oi, 1);
 
 	/* FIXME: Check these args */
 	DEVX_SET(cqc, cqc, uar_page, dvcq->uar->page_id);
@@ -252,6 +254,8 @@ int pp_create_cq_dv(const struct pp_context *ppc, struct pp_dv_cq *dvcq)
 
 	DEVX_SET64(cqc, cqc, dbr_umem_id, dvcq->db_umem->umem_id);
 	DEVX_SET64(cqc, cqc, dbr_umem_valid, 1);
+	DEVX_SET64(cqc, cqc, dbr_addr, 0);
+
 
 	DEVX_SET(create_cq_in, in, cq_umem_id, dvcq->buff_umem->umem_id);
 	DEVX_SET(create_cq_in, in, cq_umem_valid, 1);
@@ -778,7 +782,7 @@ static void *get_sw_cqe(struct pp_dv_cq *dvcq, int n)
 
 	if (likely(mlx5dv_get_cqe_opcode(cqe64) != MLX5_CQE_INVALID) &&
 	    !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe))) {
-	DVDBG("cqbuf %p n %d cqe_sz %d ncqe %d cqe64 %p owner 0x%x, opcde 0x%x final %d\n",
+	DVDBG2("cqbuf %p n %d cqe_sz %d ncqe %d cqe64 %p owner 0x%x, opcde 0x%x final %d\n",
 	       dvcq->buf, n, dvcq->cqe_sz, dvcq->ncqe, cqe64,
 	       mlx5dv_get_cqe_owner(cqe64), mlx5dv_get_cqe_opcode(cqe64),
 	       !((cqe64->op_own & MLX5_CQE_OWNER_MASK) ^ !!(n & dvcq->ncqe)));
@@ -1074,7 +1078,8 @@ static int poll_one_cq(struct pp_dv_cq *dvcq)
 
 	return 0;
 }
-
+#define snap_compiler_fence() asm volatile(""::: "memory")
+#define priv_doca_memory_barrier() _mm_sfence()
 int pp_dv_poll_cq(struct pp_dv_cq *dvcq, uint32_t ne)
 {
 	int npolled, err = 0;
@@ -1084,7 +1089,13 @@ int pp_dv_poll_cq(struct pp_dv_cq *dvcq, uint32_t ne)
 		if (err != CQ_OK)
 			break;
 	}
+
+	snap_compiler_fence();
+	priv_doca_memory_barrier();
 	dvcq->db[MLX5_CQ_SET_CI] = htobe32(dvcq->cons_index & 0xffffff);
+	priv_doca_memory_barrier();
+	snap_compiler_fence();
+	//INFO("CQ: %#x: CI:%x, cons_idx: %x\n", dvcq->cqn, dvcq->db[MLX5_CQ_SET_CI], dvcq->cons_index);
 	return err == CQ_POLL_ERR ? err : npolled;
 }
 

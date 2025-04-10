@@ -191,12 +191,13 @@ int poll_cq_verb(struct pp_verb_ctx *ppv, int max_wr_num, bool for_recv)
 {
 	struct ibv_wc wcs[PP_MAX_WR];
 	int cq_recved = 0, cqn, i;
+	static int id = 0;
 
 	do {
 		do {
 			cqn = ibv_poll_cq(ibv_cq_ex_to_cq(ppv->cqqp.cq_ex),
 					  max_wr_num - cq_recved, wcs);
-			usleep(1000 * 10);
+			//usleep(1000 * 10);
 		} while (cqn == 0);
 
 		if (cqn < 0) {
@@ -213,8 +214,10 @@ int poll_cq_verb(struct pp_verb_ctx *ppv, int max_wr_num, bool for_recv)
 			}
 		}
 		if (for_recv)
-			for (i = 0; i < cqn; i++)
+			for (i = 0; i < cqn; i++) {
+				INFO("CQ: id:%d", id++);
 				dump_msg_short(cq_recved + i, &ppv->ppc);
+			}
 		else
 			INFO("Polled %d/%d CQEs for post_send..\n", cq_recved + cqn, max_wr_num);
 

@@ -8,6 +8,7 @@
 static char ibv_devname[100] = "ibp59s0f0";
 static char ibv_devname_vf[2][100];
 static int client_sgid_idx = 3;
+pthread_mutex_t lock;
 
 //#define PP_DV_OPCODE_CLIENT IBV_WR_RDMA_WRITE_WITH_IMM /* IBV_WR_SEND_WITH_IMM */
 
@@ -21,7 +22,8 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 {
 	int num_post = PP_MAX_WR, num_comp, i, ret;
 	//int opcode = MLX5_OPCODE_RDMA_WRITE_IMM;
-	int opcode = MLX5_OPCODE_SEND_IMM;
+	int opcode = MLX5_OPCODE_RDMA_WRITE;
+	//int opcode = MLX5_OPCODE_SEND_IMM;
 
 	DBG("Pause 1sec before post send, opcode %d num_post %d length 0x%lx..\n",
 	    opcode, num_post, ppdv->ppc.mrbuflen);
@@ -34,7 +36,25 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 		memcpy(ppdv->ppc.alias_mkey_mrbuf[1][i] ,"vf1__", 6);
 	}
 
-	for (int i = 0; i < 1024; i++) {
+	while (true) {
+		ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF0;
+		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
+				opcode, 0);
+		if (ret) {
+			ERR("pp_dv_post_send failed\n");
+			return ret;
+		}
+
+		ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF1;
+		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
+				opcode, 0);
+		if (ret) {
+			ERR("pp_dv_post_send failed\n");
+			return ret;
+		}
+	}
+	#if 0
+	for (int i = 0; i < 1024 * 4; i++) {
 		ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF0;
 		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
 				opcode, IBV_SEND_SIGNALED);
@@ -65,7 +85,9 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 		//if (i < 100)
 			//usleep(1000 * 100);
 	}
+	#endif
 
+	#if 0
 	/* Reset the buffer so that we can check it the received data is expected */
 	for (i = 0; i < num_post; i++) {
 		memset(ppdv->ppc.alias_mkey_mrbuf[0][i], 0, ppdv->ppc.mrbuflen);
@@ -92,6 +114,7 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 			num_comp++;
 		}
 	}
+	#endif
 
 	INFO("Client(dv) traffic test done\n");
 	return 0;
@@ -122,7 +145,7 @@ void *polling_mkey_modify_cq(void *arg)
 			if (true) {
 				INFO("Start to vf context and mkey of vf%d\n", vf_idx);
 				pp_ctx_cleanup(&ppdv.ppc_vf[vf_idx]);
-				usleep(1000 * 1000 * 2);
+				usleep(1000 * 1000 * 2); // wait for VF flr finishing
 				pp_ctx_init(&ppdv.ppc_vf[vf_idx], ibv_devname_vf[vf_idx], 0, NULL);
 				pp_allow_other_vhca_access(&ppdv.ppc_vf[vf_idx]);
 
@@ -163,6 +186,7 @@ int main(int argc, char *argv[])
 {
     	signal(SIGUSR1, sig_handler);
     	signal(SIGUSR2, sig_handler);
+	pthread_mutex_init(&lock, NULL);
 
 	int ret;
 	if (argv[1]) {

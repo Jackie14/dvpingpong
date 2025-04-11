@@ -1,4 +1,5 @@
 #include <immintrin.h>
+#include <pthread.h>
 #include "mlx5_ifc.h"
 #include "pp_dv.h"
 
@@ -8,6 +9,7 @@
 #include "util/mmio.h"
 #include "util/udma_barrier.h"
 #include "util/util.h"
+extern pthread_mutex_t lock;
 
 #define DVDBG printf
 #define DVDBG2(fmt, args...)
@@ -682,18 +684,20 @@ static void post_send_db(struct pp_dv_qp *dvqp, int size, void *ctrl)
 
 static void set_src_data(void *seg, int id, const struct pp_context *ppc)
 {
+	pthread_mutex_lock(&lock);
 	if (ppc->mem_region_type == MEM_REGION_TYPE_MR)
 		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->mr[id]->lkey, (uint64_t)ppc->mrbuf[id]);
 	else if (ppc->mem_region_type == MEM_REGION_TYPE_DEVX)
 		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->mkey[id], (uint64_t)ppc->mkey_mrbuf[id]);
 	else if (ppc->mem_region_type == MEM_REGION_TYPE_ALIAS_VF0) {
 		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->alias_mkey[0][id], (uint64_t)ppc->alias_mkey_mrbuf[0][id]);
-		INFO("Use alias mkey: %#x\n", ppc->alias_mkey[0][id]);
+		//INFO("Use alias mkey: %#x\n", ppc->alias_mkey[0][id]);
 	}
 	else if (ppc->mem_region_type == MEM_REGION_TYPE_ALIAS_VF1) {
 		mlx5dv_set_data_seg(seg, ppc->mrbuflen, ppc->alias_mkey[1][id], (uint64_t)ppc->alias_mkey_mrbuf[1][id]);
-		INFO("Use alias mkey: %#x\n", ppc->alias_mkey[1][id]);
+		//INFO("Use alias mkey: %#x\n", ppc->alias_mkey[1][id]);
 	}
+	pthread_mutex_unlock(&lock);
 }
 
 static void post_send_one(const struct pp_context *ppc, struct pp_dv_qp *dvqp,
@@ -707,7 +711,7 @@ static void post_send_one(const struct pp_context *ppc, struct pp_dv_qp *dvqp,
 	int idx, size = 0;
 
 	idx = dvqp->sq.cur_post & (dvqp->sq.wqe_cnt - 1);
-	INFO("sq idx: %d, cur: %d, wqe_count: %d\n", idx, dvqp->sq.cur_post, dvqp->sq.wqe_cnt);
+	//INFO("sq idx: %d, cur: %d, wqe_count: %d\n", idx, dvqp->sq.cur_post, dvqp->sq.wqe_cnt);
 
 	ctrl = dvqp->sq_start + (idx << MLX5_SEND_WQE_SHIFT);
 	*(uint32_t *)((void *)ctrl + 8) = 0;
@@ -1020,10 +1024,9 @@ int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint
 	}
 
 	for (int i = 0; i < PP_MAX_WR; i++) {
-		if (pp->alias_mkey_obj[vf_idx][i]) {
-			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[vf_idx][i]);
-			pp->alias_mkey_obj[vf_idx][i] = NULL;
-		}
+		// We should create new alias mkey firstly, then destroy the old one.
+		// to avoid QP using this old alias mkey crash.
+		struct mlx5dv_devx_obj *old_alias_mkey_obj = pp->alias_mkey_obj[vf_idx][i];
 
 		uint32_t alias_mkey;
 		struct mlx5dv_devx_obj *obj = create_alias_mkey_obj(pp->ibctx,
@@ -1038,9 +1041,15 @@ int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint
 			return 3;
 		}
 		INFO("Create alias mkey: %#x\n", alias_mkey);
+		pthread_mutex_lock(&lock);
 		pp->alias_mkey_obj[vf_idx][i] = obj;
 		pp->alias_mkey[vf_idx][i] = alias_mkey;
 		pp->alias_mkey_mrbuf[vf_idx][i] = target_pp->mkey_mrbuf[i];
+		pthread_mutex_unlock(&lock);
+
+		// Destroy the old one
+		//if (old_alias_mkey_obj)
+		//	mlx5dv_devx_obj_destroy(old_alias_mkey_obj);
 	}
 	return 0;
 }
@@ -1090,11 +1099,13 @@ int pp_dv_poll_cq(struct pp_dv_cq *dvcq, uint32_t ne)
 			break;
 	}
 
+	udma_to_device_barrier();
 	snap_compiler_fence();
 	priv_doca_memory_barrier();
 	dvcq->db[MLX5_CQ_SET_CI] = htobe32(dvcq->cons_index & 0xffffff);
 	priv_doca_memory_barrier();
 	snap_compiler_fence();
+	udma_to_device_barrier();
 	//INFO("CQ: %#x: CI:%x, cons_idx: %x\n", dvcq->cqn, dvcq->db[MLX5_CQ_SET_CI], dvcq->cons_index);
 	return err == CQ_POLL_ERR ? err : npolled;
 }

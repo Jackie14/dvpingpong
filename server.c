@@ -14,19 +14,23 @@ static struct pp_exchange_info client = {};
 
 static int server_traffic_verb(struct pp_verb_ctx *ppv)
 {
+	while (true) {
+		dump_msg_short(0, &ppv->ppc);
+	}
+	#if 0
 	struct ibv_send_wr wrs[PP_MAX_WR] = {}, *bad_wrs;
 	struct ibv_recv_wr wrr[PP_MAX_WR] = {}, *bad_wrr;
 	struct ibv_sge sglists[PP_MAX_WR] = {};
 	int max_wr_num = PP_MAX_WR, ret;
 
 	INFO("Waiting for data...\n");
-	for (int i = 0; i < 1024 * 2; i++) {
+	for (int i = 0; i < 1024 * 4 * 2; i++) {
 		prepare_recv_wr_verb(ppv, wrr, sglists, max_wr_num, PP_RECV_WRID_SERVER);
 
 		/* 1. Recv "ping" */
 		ret = ibv_post_recv(ppv->cqqp.qp, wrr, &bad_wrr);
 		if (ret) {
-			ERR("%d: ibv_post_send failed %d\n", max_wr_num, ret);
+			ERR("%d: ibv_post_recv failed %d\n", max_wr_num, ret);
 			return ret;
 		}
 
@@ -36,7 +40,9 @@ static int server_traffic_verb(struct pp_verb_ctx *ppv)
 			return ret;
 		}
 	}
+	#endif
 
+	#if 0
 	usleep(1000 * 1000 * 3);
 	INFO("Now sending reply (%d)...\n", max_wr_num);
 	for (int i = 0; i < PP_MAX_WR; i++) {
@@ -55,6 +61,7 @@ static int server_traffic_verb(struct pp_verb_ctx *ppv)
 		ERR("poll_cq_verb failed\n");
 		return ret;
 	}
+	#endif
 
 	INFO("Server traffic test done\n");
 	return 0;

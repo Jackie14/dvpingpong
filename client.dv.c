@@ -15,7 +15,8 @@ pthread_mutex_t lock;
 #define PP_SEND_WRID_CLIENT  0x1000
 #define PP_RECV_WRID_CLIENT  0x4000
 
-static struct pp_dv_ctx ppdv;
+//static struct pp_dv_ctx ppdv;
+struct pp_dv_ctx ppdv;
 static struct pp_exchange_info server = {};
 
 static int client_traffic_dv(struct pp_dv_ctx *ppdv)
@@ -37,21 +38,50 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 	}
 
 	while (true) {
-		ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF0;
-		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
-				opcode, 0);
-		if (ret) {
-			ERR("pp_dv_post_send failed\n");
-			return ret;
+		uint16_t free_wqe_cnt;
+		uint32_t cur_raw = ppdv->qp.sq.cur_post;
+		uint16_t cur = cur_raw & 0xffff;
+		uint16_t ci = ppdv->qp.sq.wqe_ci;
+		uint16_t count = ppdv->qp.sq.wqe_cnt;
+		if (cur >= ci) {
+			free_wqe_cnt = count - (cur - ci);
+		} else {
+			free_wqe_cnt = count - (cur + 0x10000 - ci);
+		}
+		/*
+		INFO("CI: %#x, cur_post: %#x(%#x), wqe_cnt: %#x, free_wqe_cnt: %#x\n",
+			ci,
+			cur,
+			cur_raw,
+			count,
+			free_wqe_cnt );
+		*/
+		if (free_wqe_cnt >= num_post * 2) {
+			ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF0;
+			ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
+					opcode, IBV_SEND_SIGNALED);
+			if (ret) {
+				ERR("pp_dv_post_send failed\n");
+				return ret;
+			}
+
+			ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF1;
+			ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
+					opcode, IBV_SEND_SIGNALED);
+			if (ret) {
+				ERR("pp_dv_post_send failed\n");
+				return ret;
+			}
 		}
 
-		ppdv->ppc.mem_region_type = MEM_REGION_TYPE_ALIAS_VF1;
-		ret = pp_dv_post_send(&ppdv->ppc, &ppdv->qp, &server, num_post,
-				opcode, 0);
-		if (ret) {
-			ERR("pp_dv_post_send failed\n");
+		ret = pp_dv_poll_cq(&ppdv->cq, 1024);
+		if (ret == CQ_POLL_ERR) {
+			ERR("poll_cq(send) failed %d, %d/%d\n", ret, num_comp, num_post);
 			return ret;
+		} else {
+			//INFO("poll_cq got %d\n", ret);
 		}
+		//usleep(1000 * 1000);
 	}
 	#if 0
 	for (int i = 0; i < 1024 * 4; i++) {
@@ -143,9 +173,12 @@ void *polling_mkey_modify_cq(void *arg)
 			INFO("Got Mkey Modify CQE for vf%d\n", vf_idx);
 
 			if (true) {
-				INFO("Start to vf context and mkey of vf%d\n", vf_idx);
 				pp_ctx_cleanup(&ppdv.ppc_vf[vf_idx]);
-				usleep(1000 * 1000 * 2); // wait for VF flr finishing
+
+				INFO("Wait 5 seconds for vf%d to be back\n", vf_idx);
+				usleep(1000 * 1000 * 5); // wait for VF flr finishing
+
+				INFO("Start to create vf context and mkey of vf%d\n", vf_idx);
 				pp_ctx_init(&ppdv.ppc_vf[vf_idx], ibv_devname_vf[vf_idx], 0, NULL);
 				pp_allow_other_vhca_access(&ppdv.ppc_vf[vf_idx]);
 

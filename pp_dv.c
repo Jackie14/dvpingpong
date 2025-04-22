@@ -244,8 +244,10 @@ int pp_create_cq_dv(const struct pp_context *ppc, struct pp_dv_cq *dvcq)
 
 	DEVX_SET(create_cq_in, in, opcode, MLX5_CMD_OP_CREATE_CQ);
 
-	DEVX_SET64(cqc, cqc, log_page_size, 0); /* 12 - MLX5_ADAPTER_PAGE_SHIFT */
-	DEVX_SET64(cqc, cqc, page_offset, 0);
+	//DEVX_SET64(cqc, cqc, log_page_size, 0); /* 12 - MLX5_ADAPTER_PAGE_SHIFT */
+	//DEVX_SET64(cqc, cqc, page_offset, 0);
+	DEVX_SET(cqc, cqc, log_page_size, 0); /* 12 - MLX5_ADAPTER_PAGE_SHIFT */
+	DEVX_SET(cqc, cqc, page_offset, 0);
 	DEVX_SET(cqc, cqc, log_cq_size, PP_MAX_LOG_CQ_SIZE_2);
 	DEVX_SET(cqc, cqc, cqe_sz, 0); /* BYTES_64 */
 	DEVX_SET(cqc, cqc, oi, 1);
@@ -254,13 +256,25 @@ int pp_create_cq_dv(const struct pp_context *ppc, struct pp_dv_cq *dvcq)
 	DEVX_SET(cqc, cqc, uar_page, dvcq->uar->page_id);
 	DEVX_SET(cqc, cqc, c_eqn, eqn);
 
-	DEVX_SET64(cqc, cqc, dbr_umem_id, dvcq->db_umem->umem_id);
-	DEVX_SET64(cqc, cqc, dbr_umem_valid, 1);
-	DEVX_SET64(cqc, cqc, dbr_addr, 0);
+	//DEVX_SET64(cqc, cqc, dbr_umem_id, dvcq->db_umem->umem_id);
+	//DEVX_SET64(cqc, cqc, dbr_umem_valid, 1);
+	//DEVX_SET64(cqc, cqc, dbr_addr, 0);
+	DEVX_SET(cqc, cqc, dbr_umem_id, dvcq->db_umem->umem_id);
+	DEVX_SET(cqc, cqc, dbr_umem_valid, 1);
+	DEVX_SET(cqc, cqc, dbr_addr, 0);
+
 
 
 	DEVX_SET(create_cq_in, in, cq_umem_id, dvcq->buff_umem->umem_id);
 	DEVX_SET(create_cq_in, in, cq_umem_valid, 1);
+
+	for (int i = 0; i < sizeof(in)/4; i++) {
+		DVDBG("%03x: ", (i * 4));
+		for (int j = 0; j < 4; j++) {
+			DVDBG("%02x ", *(((uint8_t *)cqc) + (i * 4) + j));
+		}
+		DVDBG("\n");
+	}
 
 	dvcq->obj = mlx5dv_devx_obj_create(ppc->ibctx, in, sizeof(in), out, sizeof(out));
 	if (!dvcq->obj) {
@@ -924,6 +938,9 @@ static int parse_cqe(struct pp_dv_cq *dvcq, struct mlx5_cqe64 *cqe64)
 		dvcq->last_access_fail_mkey = be32toh(mkey_err->access_fail_mkey);
 		return CQ_OK;
 	} else {
+		// TODO distinguish between send and recv
+		//INFO("SET wqe_ci: %#x\n", wqe_ctr);
+		dvcq->dvqp->sq.wqe_ci = wqe_ctr;
 		return CQ_OK;
 	}
 
@@ -1015,7 +1032,7 @@ int pp_allow_other_vhca_access(struct pp_context *pp)
 	return 0;
 }
 
-
+extern struct pp_dv_ctx ppdv;
 int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint32_t modify_mkey_cqn, int vf_idx) {
 	// Set the mkey to be accesseable by alias mkey
 	uint8_t access_key[32];
@@ -1027,6 +1044,7 @@ int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint
 		// We should create new alias mkey firstly, then destroy the old one.
 		// to avoid QP using this old alias mkey crash.
 		struct mlx5dv_devx_obj *old_alias_mkey_obj = pp->alias_mkey_obj[vf_idx][i];
+		uint32 old_alias_mkey = pp->alias_mkey[vf_idx][i];
 
 		uint32_t alias_mkey;
 		struct mlx5dv_devx_obj *obj = create_alias_mkey_obj(pp->ibctx,
@@ -1048,8 +1066,41 @@ int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint
 		pthread_mutex_unlock(&lock);
 
 		// Destroy the old one
-		//if (old_alias_mkey_obj)
-		//	mlx5dv_devx_obj_destroy(old_alias_mkey_obj);
+		if (old_alias_mkey_obj) {
+			INFO("Try to destory old alias mkey %#x\n", old_alias_mkey);
+
+			// Wait for cur >= ci case
+			uint16_t cur = 0;
+			uint16_t ci = 0;
+			while (true) {
+				cur = ppdv.qp.sq.cur_post & 0xffff;
+				ci = ppdv.qp.sq.wqe_ci;
+				if (cur < ci) {
+					INFO("cur < ci, cur: %#x, ci: %#x\n", cur, ci);
+					continue;
+				} else {
+					INFO("cur >= ci, cur: %#x, ci: %#x\n", cur, ci);
+					break;
+				}
+			}
+
+			while (true){
+				if (ppdv.qp.sq.wqe_ci >= cur) {
+					INFO("new ci >= cur\n");
+					break;
+				}
+				if (ppdv.qp.sq.wqe_ci < ci) {
+					INFO("new ci < ci\n");
+					break;
+				}
+			}
+
+			while (ppdv.qp.sq.wqe_ci < cur) {
+				//INFO("Wait for old alias mkey drain");
+			}
+
+			mlx5dv_devx_obj_destroy(old_alias_mkey_obj);
+		}
 	}
 	return 0;
 }
@@ -1099,14 +1150,8 @@ int pp_dv_poll_cq(struct pp_dv_cq *dvcq, uint32_t ne)
 			break;
 	}
 
-	udma_to_device_barrier();
-	snap_compiler_fence();
-	priv_doca_memory_barrier();
+	//udma_to_device_barrier();
 	dvcq->db[MLX5_CQ_SET_CI] = htobe32(dvcq->cons_index & 0xffffff);
-	priv_doca_memory_barrier();
-	snap_compiler_fence();
-	udma_to_device_barrier();
-	//INFO("CQ: %#x: CI:%x, cons_idx: %x\n", dvcq->cqn, dvcq->db[MLX5_CQ_SET_CI], dvcq->cons_index);
 	return err == CQ_POLL_ERR ? err : npolled;
 }
 

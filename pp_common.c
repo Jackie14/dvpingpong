@@ -182,7 +182,7 @@ int pp_ctx_init(struct pp_context *pp, const char *ibv_devname, int use_vfio, co
 	};
 	int ret, i;
 
-	pp->cap.max_send_wr = PP_MAX_WR;
+	pp->cap.max_send_wr = PP_MAX_WR * 1024;
 	pp->cap.max_recv_wr = PP_MAX_WR;
 	pp->cap.max_send_sge = 1;
 	pp->cap.max_recv_sge = 1;

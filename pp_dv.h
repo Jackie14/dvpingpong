@@ -3,6 +3,7 @@
 struct dv_wq {
 	unsigned int *wqe_head;
 	unsigned int wqe_cnt;
+	unsigned int wqe_ci;
 	unsigned int max_post;
 	unsigned int head;
 	unsigned int tail;

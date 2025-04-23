@@ -21,7 +21,8 @@ static struct pp_exchange_info server = {};
 
 static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 {
-	int num_post = PP_MAX_WR, num_comp, i, ret;
+	//int num_post = PP_MAX_WR, num_comp, i, ret;
+	int num_post = PP_MAX_WR, i, ret;
 	//int opcode = MLX5_OPCODE_RDMA_WRITE_IMM;
 	int opcode = MLX5_OPCODE_RDMA_WRITE;
 	//int opcode = MLX5_OPCODE_SEND_IMM;
@@ -76,7 +77,7 @@ static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 
 		ret = pp_dv_poll_cq(&ppdv->cq, 1024);
 		if (ret == CQ_POLL_ERR) {
-			ERR("poll_cq(send) failed %d, %d/%d\n", ret, num_comp, num_post);
+			ERR("poll_cq failed %d\n", ret);
 			return ret;
 		} else {
 			//INFO("poll_cq got %d\n", ret);

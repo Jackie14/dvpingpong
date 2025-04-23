@@ -12,6 +12,10 @@ char *vfio_pci_name = "0000:3b:00.1"; /* env(VFIO_PCI_NAME) */
 static struct pp_dv_ctx ppvfio;
 static struct pp_exchange_info server = {};
 
+// TODO: just for compile. remove it.
+pthread_mutex_t lock;
+struct pp_dv_ctx ppdv;
+
 static int client_traffic_dv(struct pp_dv_ctx *ppdv)
 {
 	int num_post = PP_MAX_WR, num_comp, i, ret;

@@ -268,24 +268,26 @@ int pp_create_cq_dv(const struct pp_context *ppc, struct pp_dv_cq *dvcq)
 	DEVX_SET(create_cq_in, in, cq_umem_id, dvcq->buff_umem->umem_id);
 	DEVX_SET(create_cq_in, in, cq_umem_valid, 1);
 
+	/*
 	for (int i = 0; i < sizeof(in)/4; i++) {
 		DVDBG("%03x: ", (i * 4));
 		for (int j = 0; j < 4; j++) {
-			DVDBG("%02x ", *(((uint8_t *)cqc) + (i * 4) + j));
+			DVDBG("%02x ", *(((uint8_t *)in) + (i * 4) + j));
 		}
 		DVDBG("\n");
 	}
+	*/
 
 	dvcq->obj = mlx5dv_devx_obj_create(ppc->ibctx, in, sizeof(in), out, sizeof(out));
 	if (!dvcq->obj) {
 		int status, syndrome;
 		status = DEVX_GET(create_cq_out, out, status);
 		syndrome = DEVX_GET(create_cq_out, out, syndrome);
-		ERR("devx_obj_create(cq) failed: eqn %d, status %x, syndrome %x, dbr_umem_id %x, buf_umem_id %x\n", eqn, status, syndrome, dvcq->db_umem->umem_id, dvcq->buff_umem->umem_id);
+		ERR("devx_obj_create(cq) failed: eqn %#x, status %#x, syndrome %#x, dbr_umem_id %#x, buf_umem_id %#x\n", eqn, status, syndrome, dvcq->db_umem->umem_id, dvcq->buff_umem->umem_id);
 		goto fail_obj_create;
 	}
 	dvcq->cqn = DEVX_GET(create_cq_out, out, cqn);
-	INFO("dv: CQ %d created, eqn %d, db@%p %x, buf@%p, %x\n",
+	INFO("dv: CQ %#x created, eqn %#x, db@%p %#x, buf@%p, %#x\n",
 	     dvcq->cqn, eqn, dvcq->db, dvcq->db_umem->umem_id, dvcq->buf, dvcq->buff_umem->umem_id);
 
 	dvcq->cons_index = 0;
@@ -1058,7 +1060,8 @@ int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint
 		if (obj == NULL) {
 			return 3;
 		}
-		INFO("Create alias mkey: %#x\n", alias_mkey);
+		INFO("Create alias mkey %#x ==> vf%d mkey %#x, and attached to CQN %#x\n",
+			alias_mkey, vf_idx, target_pp->mkey[i], modify_mkey_cqn);
 		pthread_mutex_lock(&lock);
 		pp->alias_mkey_obj[vf_idx][i] = obj;
 		pp->alias_mkey[vf_idx][i] = alias_mkey;
@@ -1067,38 +1070,34 @@ int pp_init_alias_mkey(struct pp_context *pp, struct pp_context *target_pp, uint
 
 		// Destroy the old one
 		if (old_alias_mkey_obj) {
-			INFO("Try to destory old alias mkey %#x\n", old_alias_mkey);
-
-			// Wait for cur >= ci case
-			uint16_t cur = 0;
-			uint16_t ci = 0;
-			while (true) {
-				cur = ppdv.qp.sq.cur_post & 0xffff;
-				ci = ppdv.qp.sq.wqe_ci;
-				if (cur < ci) {
-					INFO("cur < ci, cur: %#x, ci: %#x\n", cur, ci);
-					continue;
-				} else {
-					INFO("cur >= ci, cur: %#x, ci: %#x\n", cur, ci);
-					break;
+			INFO("Wait for drain of old alias mkey %#x\n", old_alias_mkey);
+			uint16_t pi = ppdv.qp.sq.cur_post & 0xffff;
+			uint16_t ci = ppdv.qp.sq.wqe_ci;
+			if (pi >= ci) { 
+				// |-----------------ci------------pi-----------------|
+				//       new_ci				new_ci
+				INFO("----Sample: pi >= ci, pi: %#x, ci: %#x\n", pi, ci);
+				while (true){
+					uint16_t new_ci = ppdv.qp.sq.wqe_ci;
+					if (new_ci < ci || pi <= new_ci) {
+						INFO("----Drain of old alias mkey: new_ci < ci || pi <= new_ci.  new ci: %#x, ci: %#x, pi: %#x\n", new_ci, ci, pi);
+						break;
+					}
+				}
+			} else {
+				// |-------pi---------------------------ci-----------|
+				//                       new_ci 
+				INFO("----Sample: pi < ci, pi: %#x, ci: %#x\n", pi, ci);
+				while (true){
+					uint16_t new_ci = ppdv.qp.sq.wqe_ci;
+					if (pi <= new_ci && new_ci < ci) {
+						INFO("Drain of old alias mkey: pi <= new_ci && new_ci < ci. new ci: %#x, ci: %#x, pi: %#x\n", new_ci, ci, pi);
+						break;
+					}
 				}
 			}
 
-			while (true){
-				if (ppdv.qp.sq.wqe_ci >= cur) {
-					INFO("new ci >= cur\n");
-					break;
-				}
-				if (ppdv.qp.sq.wqe_ci < ci) {
-					INFO("new ci < ci\n");
-					break;
-				}
-			}
-
-			while (ppdv.qp.sq.wqe_ci < cur) {
-				//INFO("Wait for old alias mkey drain");
-			}
-
+			INFO("Destory old alias mkey %#x\n", old_alias_mkey);
 			mlx5dv_devx_obj_destroy(old_alias_mkey_obj);
 		}
 	}

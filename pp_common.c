@@ -306,27 +306,43 @@ void pp_ctx_cleanup(struct pp_context *pp)
 
 	for (i = 0; i < PP_MAX_WR; i++) {
 		if (MEM_REGION_TYPE_MR == pp->mem_region_type) {
-			ibv_dereg_mr(pp->mr[i]);
-			free(pp->mrbuf[i]);
-			pp->mr[i] = NULL;
-			pp->mrbuf[i] = NULL;
+			if (pp->mr[i]) {
+				ibv_dereg_mr(pp->mr[i]);
+				pp->mr[i] = NULL;
+			}
+			if (pp->mrbuf[i]) {
+				free(pp->mrbuf[i]);
+				pp->mrbuf[i] = NULL;
+			}
 		} else if (MEM_REGION_TYPE_DEVX == pp->mem_region_type) {
-			mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
-			mlx5dv_devx_umem_dereg(pp->umem_obj[i]);
-			free(pp->mkey_mrbuf[i]);
-			pp->mkey_obj[i] = NULL;
+			if (pp->mkey_obj[i]) {
+				mlx5dv_devx_obj_destroy(pp->mkey_obj[i]);
+				pp->mkey_obj[i] = NULL;
+			}
+			if (pp->umem_obj[i]) {
+				mlx5dv_devx_umem_dereg(pp->umem_obj[i]);
+				pp->umem_obj[i] = NULL;
+			}
+			if (pp->mkey_mrbuf[i]) {
+				free(pp->mkey_mrbuf[i]);
+				pp->mkey_mrbuf[i] = NULL;
+			}
 			pp->mkey[i] = 0;
 			pp->umem_obj[i] = NULL;
 			pp->mkey_mrbuf[i] = NULL;
 		} else if (MEM_REGION_TYPE_ALIAS_VF0 == pp->mem_region_type ||
 			   MEM_REGION_TYPE_ALIAS_VF1 == pp->mem_region_type) {
-			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[0][i]);
-			mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[1][i]);
-			pp->alias_mkey_obj[0][i] = NULL;
+			if (pp->alias_mkey_obj[0][i]) {
+				mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[0][i]);
+				pp->alias_mkey_obj[0][i] = NULL;
+			}
+			if (pp->alias_mkey_obj[1][i]) {
+				mlx5dv_devx_obj_destroy(pp->alias_mkey_obj[1][i]);
+				pp->alias_mkey_obj[1][i] = NULL;
+			}
 			pp->alias_mkey[0][i] = 0;
-			pp->alias_mkey_mrbuf[0][i] = NULL;
-			pp->alias_mkey_obj[1][i] = NULL;
 			pp->alias_mkey[1][i] = 0;
+			pp->alias_mkey_mrbuf[0][i] = NULL;
 			pp->alias_mkey_mrbuf[1][i] = NULL;
 		}
 	}

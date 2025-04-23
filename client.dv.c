@@ -172,28 +172,21 @@ void *polling_mkey_modify_cq(void *arg)
 				vf_idx = 1;
 			INFO("Got Mkey Modify CQE for vf%d\n", vf_idx);
 
-			if (true) {
-				pp_ctx_cleanup(&ppdv.ppc_vf[vf_idx]);
+			pp_ctx_cleanup(&ppdv.ppc_vf[vf_idx]);
 
-				INFO("Wait 5 seconds for vf%d to be back\n", vf_idx);
-				usleep(1000 * 1000 * 5); // wait for VF flr finishing
+			INFO("Wait 5 seconds for vf%d to be back\n", vf_idx);
+			usleep(1000 * 1000 * 5); // wait for VF flr finishing
 
-				INFO("Start to create vf context and mkey of vf%d\n", vf_idx);
-				pp_ctx_init(&ppdv.ppc_vf[vf_idx], ibv_devname_vf[vf_idx], 0, NULL);
-				pp_allow_other_vhca_access(&ppdv.ppc_vf[vf_idx]);
+			INFO("Start to create vf context and mkey of vf%d\n", vf_idx);
+			pp_ctx_init(&ppdv.ppc_vf[vf_idx], ibv_devname_vf[vf_idx], 0, NULL);
+			pp_allow_other_vhca_access(&ppdv.ppc_vf[vf_idx]);
 
-				// Init the mkey buf before assign it to alias mkey
-				for (int i = 0; i < PP_MAX_WR; i++) {
-					mem_string(ppdv.ppc_vf[vf_idx].mkey_mrbuf[i], ppdv.ppc.mrbuflen);
-					memcpy(ppdv.ppc_vf[vf_idx].mkey_mrbuf[i], vf_idx == 0 ? "vf0__" : "vf1__", 6); 
-				}
-			} else {
-				// Following is for "destroy mkey case", we only need to recreate mkey
-				INFO("Start to recreate mkey of vf%d\n", vf_idx);
-				pp_init_mkey(&ppdv.ppc_vf[vf_idx]);
+			// Init the mkey buf before assign it to alias mkey
+			for (int i = 0; i < PP_MAX_WR; i++) {
+				mem_string(ppdv.ppc_vf[vf_idx].mkey_mrbuf[i], ppdv.ppc.mrbuflen);
+				memcpy(ppdv.ppc_vf[vf_idx].mkey_mrbuf[i], vf_idx == 0 ? "vf0__" : "vf1__", 6); 
 			}
 
-			INFO("Start to recreate alias mkey point to mkey of vf%d\n", vf_idx);
 			pp_init_alias_mkey(&ppdv.ppc, &ppdv.ppc_vf[vf_idx], ppdv.mkey_modify_cq.cqn, vf_idx);
 		}
 		usleep(1000 * 10);
